@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Team Space">
+  <rect width="64" height="64" rx="14" fill="#eef4ff"/>
+  <path d="M14 20h26a5 5 0 0 1 5 5v12a5 5 0 0 1-5 5H27l-8 7v-7h-5a3 3 0 0 1-3-3V23a3 3 0 0 1 3-3Z" fill="#3b82f6"/>
+  <circle cx="24" cy="31" r="2.4" fill="#fff"/>
+  <circle cx="32" cy="31" r="2.4" fill="#fff"/>
+  <circle cx="40" cy="31" r="2.4" fill="#fff"/>
+  <circle cx="46" cy="42" r="7" fill="#1d4ed8"/>
+  <path d="M46 38.6v6.8M42.6 42h6.8" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+</svg>

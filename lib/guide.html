@@ -1,0 +1,434 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>团队空间 · 教程</title>
+<style>
+  /* ── 团队 Design Token（Figma Library 1920×1200 · cl_* 暗色系）── */
+  :root {
+    /* 文字层级：a0 最强 → a4 最弱 */
+    --t0: #EBF0F5;
+    --t1: #EBF0F5CC;
+    --t2: #EBF0F599;
+    --t3: #EBF0F566;
+    --t4: #EBF0F54D;
+    --t5: #EBF0F51A;
+
+    /* 语义色 */
+    --ok: #00C271;          /* 成功 / 自动完成 */
+    --warn: #FF9636;        /* 提示 / 本页唯一强调色 */
+    --danger: #E02C2C;
+    --neutral: #4C5669;
+
+    /* 面与线：不用纯黑，底比黑亮一档，层次靠 3 个大面色 */
+    --bg: #12141A;
+    --bg-2: #171A21;
+    --bg-3: #1D2129;
+    --line: #EBF0F514;
+    --line-2: #EBF0F526;
+
+    /* 圆角：团队 token 8 / 12 / 16 */
+    --r-8: 8px;
+    --r-12: 12px;
+    --r-16: 16px;
+
+    --ease: cubic-bezier(.2, .7, .3, 1);
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scrollbar-gutter: stable; }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    * { transition: none !important; }
+    .toc td.t a:active { transform: none; }
+  }
+  body {
+    margin: 0;
+    padding: 44px 30px 80px;
+    background: var(--bg);
+    color: var(--t1);
+    font: 14px/1.72 "Source Han Sans CN", system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  ::selection { background: #FF96363D; color: var(--t0); }
+
+  .shell { max-width: 1060px; margin: 0 auto; }
+
+  /* ── 页头：只靠字号与字重建立层级，不用渐变、不加图标 ── */
+  .hero { padding-bottom: 26px; border-bottom: 1px solid var(--line-2); margin-bottom: 30px; }
+  .hero h1 {
+    margin: 0 0 10px;
+    font-size: 30px;
+    line-height: 1.35;
+    font-weight: 660;
+    letter-spacing: .01em;
+    color: var(--t0);
+  }
+  .hero p { margin: 0; color: var(--t2); font-size: 13.5px; }
+  .hero .meta {
+    margin-top: 14px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px;
+    font-size: 12px;
+    color: var(--t3);
+  }
+  .hero .meta b { color: var(--warn); font-weight: 600; }
+
+  /* ── 双栏：左目录（表格） + 右正文 ── */
+  .layout {
+    display: grid;
+    grid-template-columns: 176px minmax(0, 1fr);
+    gap: 34px;
+    align-items: start;
+  }
+  @media (max-width: 880px) {
+    body { padding: 30px 18px 60px; }
+    .layout { grid-template-columns: minmax(0, 1fr); gap: 26px; }
+    .toc { position: static !important; }
+    .toc dl { display: none; }
+  }
+
+  /* ── 左目录：表格形态，粘性跟随 ── */
+  .toc { position: sticky; top: 26px; }
+  .toc-head {
+    margin: 0 0 10px;
+    font-size: 10px;
+    letter-spacing: .16em;
+    color: var(--t4);
+  }
+  .toc table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11.5px;
+  }
+  .toc tr + tr td { border-top: 1px solid var(--line); }
+  .toc td { padding: 8px 0; vertical-align: middle; }
+  .toc td.n {
+    width: 21px;
+    color: var(--t4);
+    font-variant-numeric: tabular-nums;
+    font-size: 10.5px;
+    font-weight: 600;
+    padding-left: 2px;
+  }
+  .toc td.t a {
+    display: block;
+    color: var(--t2);
+    text-decoration: none;
+    font-weight: 500;
+    border-left: 2px solid transparent;
+    padding-left: 8px;
+    margin-left: -8px;
+    transition: color .15s var(--ease), border-color .15s var(--ease), transform .09s var(--ease);
+  }
+  .toc td.t a:hover,
+  .toc td.t a:focus-visible { color: var(--warn); border-left-color: var(--warn); outline: none; }
+  .toc td.t a:focus-visible { background: #FF963614; }
+  /* 点目录行时的按下反馈：幅度很小，只做「按到了」的确认感 */
+  .toc td.t a:active { transform: scale(.985); transition-duration: .09s; }
+  .toc td.d { color: var(--t4); font-size: 10.5px; text-align: right; white-space: nowrap; }
+
+  /* ── 正文：不用卡片，用编号 + 分隔线 ── */
+  main { min-width: 0; }
+  section {
+    padding: 0 0 34px;
+    margin-bottom: 34px;
+    border-bottom: 1px solid var(--line);
+    scroll-margin-top: 26px;
+  }
+  section:last-of-type { border-bottom: 0; margin-bottom: 0; padding-bottom: 8px; }
+  section:target .num { color: var(--warn); }
+
+  .sec-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 16px; }
+  .num {
+    flex: none;
+    font-size: 26px;
+    line-height: 1;
+    font-weight: 300;
+    color: var(--t5);
+    font-variant-numeric: tabular-nums;
+    transition: color .2s var(--ease);
+  }
+  h2 {
+    margin: 0;
+    font-size: 17px;
+    line-height: 1.5;
+    font-weight: 640;
+    letter-spacing: .005em;
+    color: var(--t0);
+  }
+  h2 small { display: block; margin-top: 4px; font-size: 12.5px; font-weight: 400; color: var(--t3); }
+
+  ol { margin: 0; padding-left: 19px; }
+  li { margin: 7px 0; color: var(--t1); }
+  li::marker { color: var(--t4); font-variant-numeric: tabular-nums; }
+  b { font-weight: 620; color: var(--t0); }
+  code {
+    font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--warn);
+    background: #FF96361A;
+    padding: 1.5px 6px;
+    border-radius: var(--r-8);
+  }
+
+  /* ── 提示条：只有左侧竖线，不做成卡片 ── */
+  .tip, .warn {
+    margin-top: 18px;
+    padding: 12px 0 12px 16px;
+    border-left: 2px solid var(--neutral);
+    font-size: 13px;
+    line-height: 1.78;
+    color: var(--t2);
+  }
+  .tip { border-left-color: var(--warn); }
+  .warn { border-left-color: var(--danger); }
+  .tip b, .warn b { color: var(--t0); }
+
+  /* ── 配图 ── */
+  figure { margin: 22px 0 0; }
+  figcaption {
+    margin-top: 10px;
+    font-size: 11.5px;
+    color: var(--t4);
+    text-align: center;
+    letter-spacing: .02em;
+  }
+  svg { width: 100%; height: auto; display: block; }
+
+  .s-t { font: 12px "Source Han Sans CN", -apple-system, sans-serif; fill: var(--t1); }
+  .s-m { font: 11px "Source Han Sans CN", -apple-system, sans-serif; fill: var(--t3); }
+  .s-w { font: 12px "Source Han Sans CN", -apple-system, sans-serif; fill: #12141A; font-weight: 600; }
+  .s-box { fill: none; stroke: var(--line-2); stroke-width: 1.2; }
+  .s-card { fill: var(--bg-2); stroke: var(--line-2); stroke-width: 1.2; }
+  .s-hl { fill: #FF96361F; stroke: #FF963680; stroke-width: 1.2; }
+  .s-line { stroke: var(--warn); stroke-width: 1.5; fill: none; opacity: .85; }
+  .s-fill { fill: var(--warn); }
+
+  footer {
+    margin-top: 40px;
+    padding-top: 18px;
+    border-top: 1px solid var(--line);
+    color: var(--t4);
+    font-size: 11.5px;
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  :focus-visible { outline: 2px solid var(--warn); outline-offset: 2px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <header class="hero">
+    <h1>团队空间 · 教程</h1>
+    <p>四件事：会话上传、会话领取、委托、SKILL / 插件共享。左侧目录可点，直接跳到对应章节。</p>
+    <div class="meta">
+      <span>适用版本 <b>2.7.26+</b></span>
+      <span>阅读时长 约 3 分钟</span>
+      <span>橙色 = 你需要操作的动作</span>
+    </div>
+  </header>
+
+  <div class="layout">
+
+    <aside class="toc">
+      <p class="toc-head">目录</p>
+      <table>
+        <tr><td class="n">01</td><td class="t"><a href="#s1">会话上传</a></td><td class="d">分享</td></tr>
+        <tr><td class="n">02</td><td class="t"><a href="#s2">会话领取</a></td><td class="d">认领</td></tr>
+        <tr><td class="n">03</td><td class="t"><a href="#s3">委托</a></td><td class="d">派活</td></tr>
+        <tr><td class="n">04</td><td class="t"><a href="#s4">SKILL 与插件</a></td><td class="d">共享</td></tr>
+        <tr><td class="n">05</td><td class="t"><a href="#s5">常见问题</a></td><td class="d">速查</td></tr>
+      </table>
+    </aside>
+
+    <main>
+
+      <section id="s1">
+        <div class="sec-head">
+          <span class="num">01</span>
+          <h2>会话上传<small>把一段完整对话分享给团队</small></h2>
+        </div>
+        <ol>
+          <li>在左侧会话列表里，把鼠标移到某个会话上，点行尾的 <code>⋯</code>。</li>
+          <li>选「<b>分享到团队空间</b>」。</li>
+          <li>分享的是完整对话记录，上传到主服务器；正文特别大时会自动降级成文本快照。</li>
+        </ol>
+        <figure>
+          <svg viewBox="0 0 740 186" role="img" aria-label="会话上传示意图">
+            <rect x="4" y="12" width="246" height="158" rx="12" class="s-box"/>
+            <text x="20" y="34" class="s-m">左侧会话列表</text>
+            <rect x="16" y="46" width="222" height="34" rx="8" class="s-card"/>
+            <text x="30" y="68" class="s-t">重构登录流程</text>
+            <text x="212" y="68" class="s-m">⋯</text>
+            <rect x="16" y="88" width="222" height="34" rx="8" class="s-hl"/>
+            <text x="30" y="110" class="s-t">车机性能评估</text>
+            <text x="212" y="110" class="s-m">⋯</text>
+            <rect x="16" y="132" width="222" height="26" rx="7" class="s-fill"/>
+            <text x="32" y="150" class="s-w">分享到团队空间</text>
+            <path d="M276 98 H 392" class="s-line"/>
+            <path d="M386 92 L 396 98 L 386 104" class="s-line"/>
+            <text x="280" y="86" class="s-m">上传</text>
+            <rect x="406" y="50" width="330" height="96" rx="12" class="s-box"/>
+            <text x="424" y="74" class="s-m">主服务器</text>
+            <rect x="424" y="86" width="292" height="42" rx="8" class="s-card"/>
+            <text x="440" y="112" class="s-t">团队空间 · 会话 tab</text>
+            <text x="644" y="112" class="s-m">可认领</text>
+          </svg>
+          <figcaption>在会话行的 ⋯ 菜单里分享，分享后出现在「会话」tab</figcaption>
+        </figure>
+        <div class="tip">分享不等于「发给所有人本机」——别人要先<b>认领</b>，历史才会复制到他们自己的机器上。</div>
+      </section>
+
+      <section id="s2">
+        <div class="sec-head">
+          <span class="num">02</span>
+          <h2>会话领取<small>把别人的会话拿到本机继续</small></h2>
+        </div>
+        <ol>
+          <li>打开「会话」tab，找到想要的那条。</li>
+          <li>点卡片上的「<b>认领</b>」。</li>
+          <li>插件会把完整历史复制成本机的一个新会话，并自动打开它。</li>
+          <li>看完可以点「<b>交回</b>」留个回执，发起人那边能看到你已认领。</li>
+        </ol>
+        <figure>
+          <svg viewBox="0 0 740 176" role="img" aria-label="会话领取示意图">
+            <rect x="4" y="22" width="326" height="126" rx="12" class="s-box"/>
+            <text x="22" y="46" class="s-m">团队空间 · 会话 tab</text>
+            <rect x="18" y="58" width="298" height="72" rx="10" class="s-card"/>
+            <text x="34" y="82" class="s-t">车机性能评估</text>
+            <text x="34" y="104" class="s-m">来自 xinzhan · 28 条消息</text>
+            <rect x="238" y="96" width="62" height="24" rx="7" class="s-fill"/>
+            <text x="252" y="113" class="s-w">认领</text>
+            <path d="M344 86 H 434" class="s-line"/>
+            <path d="M428 80 L 438 86 L 428 92" class="s-line"/>
+            <rect x="450" y="44" width="286" height="84" rx="12" class="s-hl"/>
+            <text x="468" y="68" class="s-t">本机新会话（自动打开）</text>
+            <text x="468" y="90" class="s-m">完整历史已复制，可直接接着聊</text>
+            <text x="468" y="110" class="s-m">原会话不受影响</text>
+          </svg>
+          <figcaption>认领 = 复制一份到你本机，不是「加入对方的会话」</figcaption>
+        </figure>
+        <div class="tip">认领是幂等的：重复认领会复用同一份副本，不会每次多出一条。</div>
+      </section>
+
+      <section id="s3">
+        <div class="sec-head">
+          <span class="num">03</span>
+          <h2>委托<small>把活派给队友的 AI，执行完自动回传</small></h2>
+        </div>
+        <ol>
+          <li><b>发起：只能由 AI 发起</b>。直接跟你的 agent 说「把这个任务派给某某」，它会调用委托工具；页面上没有手动新建按钮。</li>
+          <li><b>谁能看到</b>：指定给某人的委托，只有被指定人、发起人、主服务器看得到；不指定人的对所有人可见。</li>
+          <li><b>接收</b>：被指定人在「委托」tab 点「接收」→ 自动建一个新会话、把指令投进去、开始执行。</li>
+          <li><b>交回</b>：执行完点「交回结果」，写清做了什么和结论。</li>
+          <li><b>回导</b>：发起人这边每 20 秒检查一次，结果会导进一个新会话，可以直接接着聊。</li>
+        </ol>
+        <figure>
+          <svg viewBox="0 0 740 244" role="img" aria-label="委托流程图">
+            <rect x="4" y="18" width="146" height="52" rx="10" class="s-card"/>
+            <text x="22" y="40" class="s-t">你的 AI</text>
+            <text x="22" y="58" class="s-m">说「派给某某」</text>
+            <path d="M158 44 H 214" class="s-line"/>
+            <path d="M208 38 L 218 44 L 208 50" class="s-line"/>
+            <rect x="226" y="18" width="172" height="52" rx="10" class="s-hl"/>
+            <text x="242" y="40" class="s-t">委托卡片</text>
+            <text x="242" y="58" class="s-m">target = 某某</text>
+            <path d="M406 44 H 462" class="s-line"/>
+            <path d="M456 38 L 466 44 L 456 50" class="s-line"/>
+            <rect x="474" y="18" width="262" height="52" rx="10" class="s-card"/>
+            <text x="490" y="40" class="s-t">对方点「接收」</text>
+            <text x="490" y="58" class="s-m">只有被指定人看得到这条</text>
+            <path d="M605 76 V 116" class="s-line"/>
+            <path d="M599 110 L 605 120 L 611 110" class="s-line"/>
+            <rect x="454" y="128" width="282" height="48" rx="10" class="s-hl"/>
+            <text x="470" y="149" class="s-t">自动建会话 + 投递指令</text>
+            <text x="470" y="167" class="s-m">约 1 秒内开始执行</text>
+            <path d="M450 152 H 432" class="s-line"/>
+            <path d="M438 146 L 428 152 L 438 158" class="s-line"/>
+            <rect x="226" y="128" width="198" height="48" rx="10" class="s-card"/>
+            <text x="242" y="149" class="s-t">执行完「交回结果」</text>
+            <text x="242" y="167" class="s-m">写结论与风险</text>
+            <path d="M226 152 H 158" class="s-line"/>
+            <path d="M164 146 L 154 152 L 164 158" class="s-line"/>
+            <rect x="4" y="128" width="146" height="48" rx="10" class="s-card"/>
+            <text x="20" y="149" class="s-t">结果导回</text>
+            <text x="20" y="167" class="s-m">发起人新会话</text>
+            <text x="4" y="212" class="s-m">深色 = 人操作　橙色 = 自动完成</text>
+          </svg>
+          <figcaption>从「派活」到「结果回到你这边」，中间只有接收和交回要人点</figcaption>
+        </figure>
+        <div class="warn">看不到某条委托是正常现象：指定给别人的委托不会出现在你的列表里。<br>看不到「删除」也正常：委托只有主服务器能删，避免成员误删别人的记录。</div>
+      </section>
+
+      <section id="s4">
+        <div class="sec-head">
+          <span class="num">04</span>
+          <h2>SKILL 与插件共享<small>别人写好，你一键装到本机</small></h2>
+        </div>
+        <ol>
+          <li><b>SKILL</b>：「SKILL」tab → 找到别人共享的正文 → 点「安装」→ 写入你自己机器的 <code>~/.dsh/skills/&lt;name&gt;/SKILL.md</code>。</li>
+          <li><b>插件</b>：「插件」tab → 清单里带审计结论 → 先读审计，再点「安装 / 更新」。</li>
+          <li>装插件是下载压缩包 + 解压 + 登记，装完通常需要重启 App。</li>
+        </ol>
+        <figure>
+          <svg viewBox="0 0 740 186" role="img" aria-label="SKILL 与插件共享示意图">
+            <rect x="4" y="14" width="234" height="158" rx="12" class="s-box"/>
+            <text x="20" y="38" class="s-m">SKILL tab</text>
+            <rect x="18" y="50" width="206" height="52" rx="9" class="s-card"/>
+            <text x="32" y="72" class="s-t">oi-senior-developer</text>
+            <rect x="160" y="78" width="54" height="20" rx="6" class="s-fill"/>
+            <text x="174" y="92" class="s-w">安装</text>
+            <rect x="18" y="110" width="206" height="52" rx="9" class="s-card"/>
+            <text x="32" y="132" class="s-t">car-perf-diagnosis</text>
+            <rect x="160" y="138" width="54" height="20" rx="6" class="s-fill"/>
+            <text x="174" y="152" class="s-w">安装</text>
+            <path d="M248 94 H 336" class="s-line"/>
+            <path d="M330 88 L 340 94 L 330 100" class="s-line"/>
+            <rect x="350" y="14" width="234" height="158" rx="12" class="s-box"/>
+            <text x="366" y="38" class="s-m">插件 tab</text>
+            <rect x="364" y="50" width="206" height="66" rx="9" class="s-card"/>
+            <text x="378" y="72" class="s-t">dsh-team-space</text>
+            <text x="378" y="92" class="s-m">审计：零依赖 · 无安装脚本</text>
+            <rect x="502" y="78" width="54" height="20" rx="6" class="s-fill"/>
+            <text x="516" y="92" class="s-w">更新</text>
+            <path d="M594 94 H 680" class="s-line"/>
+            <path d="M674 88 L 684 94 L 674 100" class="s-line"/>
+            <rect x="694" y="50" width="42" height="88" rx="8" class="s-card"/>
+            <text x="704" y="78" class="s-m">本</text>
+            <text x="704" y="94" class="s-m">机</text>
+          </svg>
+          <figcaption>共享的是「正文 / 清单 + 审计」，安装动作永远发生在你自己机器上</figcaption>
+        </figure>
+        <div class="warn">装第三方插件前必须看审计结论：它能跑什么命令、写哪些目录、有没有网络出口。团队空间只负责分发，不替你判断安全性。</div>
+      </section>
+
+      <section id="s5">
+        <div class="sec-head">
+          <span class="num">05</span>
+          <h2>常见问题<small>几个一定会遇到的点</small></h2>
+        </div>
+        <ol>
+          <li><b>看不到别人的委托</b> —— 正常，指定给某人的委托只对被指定人可见。</li>
+          <li><b>看不到「删除」</b> —— 委托只有主服务器能删。</li>
+          <li><b>点「接收」没反应</b> —— 确认团队空间页面开着，且本机配了可用模型。</li>
+          <li><b>会话认领后找不到</b> —— 它会在侧边栏会话列表里出现，标题与原会话相同。</li>
+          <li><b>插件显示「可更新」但本机版本更高</b> —— 2.7.25 起按语义化版本比较，本机 ≥ 空间会显示「已是最新 / 本机更新」。</li>
+          <li><b>不要在本机点「更新」团队空间自己</b> —— link 安装会被替换目录，运行中的 DSH 会崩。</li>
+        </ol>
+      </section>
+
+      <footer>
+        <span>团队空间 · 教程</span>
+        <span>内容与插件功能保持同步 · 改功能记得回来改这一页</span>
+      </footer>
+    </main>
+  </div>
+</div>
+</body>
+</html>

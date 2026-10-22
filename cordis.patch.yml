@@ -1,0 +1,7 @@
+# dsh-team-space：团队空间页面（宿主半 + 浏览器半）
+#
+# 侧栏入口排在「自动化任务」（其 panellist order 为 10）之后，页面挂在 main 槽，
+# key 与侧栏 id 都是 team-space。
+- insert:
+    - id: team-space
+      name: '@local/dsh-team-space'

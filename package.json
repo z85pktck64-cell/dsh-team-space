@@ -1,0 +1,48 @@
+{
+  "name": "@local/dsh-team-space",
+  "version": "2.7.41",
+  "private": false,
+  "type": "module",
+  "description": "DSH plugin: LAN team space for AI coding sessions — share, claim and return sessions across machines, plus shared skills, plugins & git index.",
+  "license": "MIT",
+  "author": "Xinzhan",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/z85pktck64-cell/dsh-team-space.git"
+  },
+  "homepage": "https://github.com/z85pktck64-cell/dsh-team-space#readme",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "team-space",
+    "collaboration",
+    "session-sharing"
+  ],
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "lib/**",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
+    }
+  }
+}

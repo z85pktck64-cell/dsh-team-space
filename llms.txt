@@ -1,0 +1,16 @@
+# dsh-team-space
+
+> DSH (DeepSeek CLI) plugin — a LAN team space for AI coding sessions: share a session,
+> let a teammate claim it on their own machine, and return the result as a receipt.
+
+Capabilities:
+- Share an AI agent session to the team space (text snapshot, not a live session)
+- Claim across devices in 3 steps: /claim -> local /import-session -> /claim/commit
+- Return results in 2 steps: /local-session?since= -> /receipt/submit
+- F-Assign: hand off tasks to agents, state machine open -> doing -> done
+- Shared registries: SKILL / plugin (with SHA256-confirmed install) / git repo index
+- Author guard: cross-author overwrite requires baseVersion + takeOver=true
+
+Stack: Node.js (ESM), Cordis plugin for DSH, host half lib/index.js + browser half lib/client.js
+Transport: local HTTP API under /api/team-space/*, LAN only, no auth
+Docs: README.md · API endpoints listed in README 「流程」section

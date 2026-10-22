@@ -1,0 +1,12 @@
+# 依赖
+node_modules/
+
+# macOS
+.DS_Store
+
+# 构建产物
+*.tgz
+
+# 本地备份（源码快照，不入库）
+.bak-*/
+*.bak-*
