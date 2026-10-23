@@ -216,7 +216,15 @@ async function runCrossEnd(base) {
     /const name = entry \|\| shortName/.test(indexSrc)
     && /enablePluginRow\(dirname\(base\), dest, short, bundleEntry\)/.test(indexSrc))
 
-  // 14) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
+  // 14) toast 只能有一份定义，且动画每帧都要带 -50%：
+  //     两份并存时后定义的 animation 会覆盖 translateX(-50%)，toast 左边缘贴中线，位置随文本长度变
+  const toastDefs = (clientSrc.match(/^\.ts-toast\{/gm) ?? []).length
+  ok('toast 只有一份 CSS 定义', toastDefs === 1, `实际 ${toastDefs} 份`)
+  ok('toast 动画每帧都带 -50%（否则居中会丢）',
+    /@keyframes ts-toast-in\{from\{opacity:0;transform:translate\(-50%/.test(clientSrc)
+    && /to\{opacity:1;transform:translate\(-50%/.test(clientSrc))
+
+  // 15) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
   let readme = ''
   try { readme = readFileSync(root + 'README.md', 'utf8') } catch { /* 没有就报红 */ }
   ok('README 保留三端同步约定', readme.includes('三个消费方'))
