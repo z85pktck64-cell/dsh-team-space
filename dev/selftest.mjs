@@ -5,6 +5,7 @@
  * 端口不传则从本机监听端口里自动探测（找能回 200 的 team-space API）。
  */
 import { execSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { readFileSync } from 'node:fs'
 
 const BASE_SUFFIX = '/api/team-space'
@@ -74,6 +75,71 @@ async function findBase(explicit) {
  * 扫尾：把自检自己的痕迹清干净。
  * 残留的 selftest-* 条目会混进「分享会话」列表——点到它就是一个打不开的假 sessionId。
  */
+/**
+ * 「非服务器端」与「三端一致性」的回归检查。
+ *
+ * 这些 bug 有个共同点：在发布者本机看起来完全正常，只有成员端才暴露。
+ * 典型例子：isSelf 按插件名判断，发布者是 link 安装所以显示「当前插件」看着对，
+ * 但所有成员也都会被判成「当前插件」，永远点不了更新。
+ *
+ * 这里不做端到端模拟（那需要第二台机器），只做「能让这类错误变红」的静态 + 字段检查。
+ */
+async function runCrossEnd(base) {
+  // 不能用 .pathname：中文目录名会被百分号编码，readFileSync 直接 ENOENT
+  const root = fileURLToPath(new URL('..', import.meta.url))
+  const clientSrc = readFileSync(root + 'lib/client.js', 'utf8')
+  const indexSrc = readFileSync(root + 'lib/index.js', 'utf8')
+  const portalSrc = readFileSync(root + 'lib/portal.html', 'utf8')
+  const mcpSrc = readFileSync(root + 'dev/mcp-server.mjs', 'utf8')
+
+  // 1) isSelf 不能再按插件名判断：那对所有成员都成立，等于成员永远不能更新
+  ok('isSelf 不按插件名判断（成员端才暴露的坑）',
+    !/const isSelf = \/\(\^\|\\\/dsh-team-space\$/.test(clientSrc)
+    && /const isSelf = !!item\.installedLink/.test(clientSrc))
+
+  // 2) 服务端必须给出 installedLink，客户端才有判据
+  ok('服务端返回 installedLink 字段',
+    /installedLink/.test(indexSrc) && /isSymbolicLink/.test(indexSrc))
+
+  // 3) 线上接口真的带出这个字段（成员端靠它区分 link / 真实目录）
+  const listed = await call(base, 'list').catch(() => null)
+  const selfPlugin = (listed?.tables?.plugins ?? []).find(x => x.name === 'dsh-team-space')
+  ok('/list 里的 dsh-team-space 带 installedLink 布尔值',
+    selfPlugin && typeof selfPlugin.installedLink === 'boolean',
+    selfPlugin ? `实际是 ${typeof selfPlugin.installedLink}` : '没找到这条')
+
+  // 4) MCP 的 TOOLS 与 HANDLERS 必须一一对应，否则 tools/list 报了却调不通
+  const toolNames = [...mcpSrc.matchAll(/name: '(team_space_[a-z_]+)'/g)].map(m => m[1])
+  const handlerNames = [...mcpSrc.matchAll(/async (team_space_[a-z_]+)\(/g)].map(m => m[1])
+  const missing = toolNames.filter(n => !handlerNames.includes(n))
+  ok(`MCP 工具与处理器一一对应（${toolNames.length} 个工具）`,
+    toolNames.length > 0 && missing.length === 0,
+    missing.length ? `缺处理器：${missing.join(', ')}` : '')
+
+  // 5) 门户页调的接口，服务端必须有对应路由
+  const portalPaths = [...portalSrc.matchAll(/API \+ '(\/[a-z-]+)/g)].map(m => m[1])
+  const badPaths = [...new Set(portalPaths)].filter(p => !indexSrc.includes(`ROUTE}${p}`))
+  ok(`门户页引用的接口都有对应路由（${[...new Set(portalPaths)].length} 个）`,
+    badPaths.length === 0,
+    badPaths.length ? `无对应路由：${badPaths.join(', ')}` : '')
+
+  // 6) 排序规则两端必须一致：服务端不排序，客户端与门户页都用 updatedAt ?? createdAt
+  ok('门户页与客户端用同一条排序规则',
+    /updatedAt != null \? row\.updatedAt : row\.createdAt/.test(portalSrc)
+    && /item\?\.updatedAt \?\? item\?\.createdAt/.test(clientSrc))
+
+  // 7) installCommand 里不能带引号：客户端正则 /\S+\.tgz/ 会把引号一起吃进去
+  const cmd = selfPlugin?.installCommand ?? ''
+  ok('installCommand 的 tgz 地址没被引号包住',
+    !/https?:\/\/\S+\.tgz["']/.test(cmd),
+    cmd ? `实际：${cmd.slice(0, 70)}` : '没有 installCommand')
+
+  // 8) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
+  let readme = ''
+  try { readme = readFileSync(root + 'README.md', 'utf8') } catch { /* 没有就报红 */ }
+  ok('README 保留三端同步约定', readme.includes('三个消费方'))
+}
+
 async function sweep(base) {
   const list = await call(base, 'list')
   // 删除委托只允许主服务器，扫尾必须带上宿主 deviceId，否则会被 403 挡住（真实回归过一次）。
@@ -403,6 +469,7 @@ async function main() {
   HOST_DEVICE = String((await call(base, 'gateway-status').catch(() => null))?.deviceId ?? '')
   try {
     await run(base)
+    await runCrossEnd(base)
   } finally {
     try {
       const removed = await sweep(base)
