@@ -101,12 +101,17 @@ async function runCrossEnd(base) {
   ok('服务端返回 installedLink 字段',
     /installedLink/.test(indexSrc) && /isSymbolicLink/.test(indexSrc))
 
-  // 3) 线上接口真的带出这个字段（成员端靠它区分 link / 真实目录）
+  // 3) 安装状态的正确来源是 /local-state（请求方本机），不是 /list（响应方机器）
   const listed = await call(base, 'list').catch(() => null)
   const selfPlugin = (listed?.tables?.plugins ?? []).find(x => x.name === 'dsh-team-space')
-  ok('/list 里的 dsh-team-space 带 installedLink 布尔值',
-    selfPlugin && typeof selfPlugin.installedLink === 'boolean',
-    selfPlugin ? `实际是 ${typeof selfPlugin.installedLink}` : '没找到这条')
+  ok('/list 不返回 installedLink（它是纯本机概念，混进来会误导成员）',
+    selfPlugin && selfPlugin.installedLink === undefined,
+    selfPlugin ? `实际带出了 ${selfPlugin.installedLink}` : '没找到这条')
+  const localState = await call(base, 'local-state?plugins=dsh-team-space').catch(() => null)
+  const localSelf = localState?.plugins?.['dsh-team-space']
+  ok('/local-state 返回 installedLink 布尔值（成员端判据）',
+    localSelf && typeof localSelf.installedLink === 'boolean',
+    localSelf ? `实际是 ${typeof localSelf.installedLink}` : '拿不到本机状态')
 
   // 4) MCP 的 TOOLS 与 HANDLERS 必须一一对应，否则 tools/list 报了却调不通
   const toolNames = [...mcpSrc.matchAll(/name: '(team_space_[a-z_]+)'/g)].map(m => m[1])
