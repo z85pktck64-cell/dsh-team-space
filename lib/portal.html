@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#14161b">
+<title>团队空间</title>
+<style>
+  /* 视觉规格对齐 DSH 内部的团队空间：暗色 token、两栏卡片、胶囊徽章。
+     这里是硬编码值——门户页脱离 DSH，拿不到 --dsw-* 变量。 */
+  :root{
+    --bg-0:#101216; --bg-1:#14161b; --bg-2:#1a1d24; --bg-3:#20242d;
+    --text-1:#EBF0F5; --text-2:#EBF0F5CC; --text-3:#EBF0F599; --text-4:#EBF0F54D;
+    --border:#EBF0F51A; --border-2:#EBF0F533;
+    --accent:#4C8DFF; --ok:#00C271; --warn:#FF9636; --danger:#E02C2C;
+    --r-lg:14px; --r-md:10px; --pill:999px;
+    --shadow-1:0 1px 2px rgba(0,0,0,.24);
+    --font: system-ui, -apple-system, "PingFang SC", "Source Han Sans CN", "Microsoft YaHei", sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg-1);color:var(--text-1);font-family:var(--font);font-size:14px;line-height:1.6;font-variant-numeric:tabular-nums}
+  body{scrollbar-gutter:stable;min-height:100vh}
+  ::selection{background:#FF963640}
+
+  .wrap{max-width:1080px;margin:0 auto;padding:24px 28px 64px}
+
+  /* ---------- 顶栏 ---------- */
+  header{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:22px;padding-bottom:18px;border-bottom:1px solid var(--border)}
+  .brand{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+  h1{margin:0;font-size:24px;font-weight:600;letter-spacing:-.01em}
+  .sub{color:var(--text-3);font-size:12.5px}
+  .stat{display:flex;gap:18px;font-size:12.5px;color:var(--text-4)}
+  .stat b{color:var(--text-2);font-weight:600}
+
+  .icon-btn{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;border:0;background:transparent;color:var(--text-3);cursor:pointer;padding:0}
+.icon-btn:hover{background:var(--bg-3);color:var(--text-1)}
+.icon-btn svg{width:16px;height:16px;display:block;transform-origin:center}
+.icon-btn.spinning svg{animation:portal-spin .8s linear infinite}
+@keyframes portal-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+.me{position:relative}
+.me-trigger{display:flex;align-items:center;gap:8px;padding:5px 10px 5px 5px;border:1px solid var(--border);border-radius:var(--pill);background:var(--bg-2);color:inherit;font:inherit;cursor:pointer}
+.me-trigger:hover{border-color:var(--border-2)}
+.caret{font-size:10px;color:var(--text-4)}
+.me-panel{position:absolute;right:0;top:calc(100% + 8px);width:326px;z-index:70;background:var(--bg-2);border:1px solid var(--border-2);border-radius:var(--r-lg);box-shadow:0 24px 60px -24px rgba(0,0,0,.8);padding:14px;display:flex;flex-direction:column;gap:12px}
+.panel-row{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12.5px}
+.panel-label{color:var(--text-4);flex:none}
+.panel-value{color:var(--text-1);display:flex;align-items:center;gap:6px;min-width:0;word-break:break-all;line-height:1.45}
+.panel-sep{height:1px;background:var(--border);margin:0 -4px}
+.dev-list{display:flex;flex-direction:column;gap:6px;max-height:180px;overflow:auto}
+.dev-item{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--text-2)}
+.dev-name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dev-ip{flex:none;font-size:11.5px;color:var(--text-4);font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+.dot{width:6px;height:6px;border-radius:50%;flex:none;background:var(--text-4)}
+.dot.on{background:var(--ok);box-shadow:0 0 0 3px #00C27122}
+.dot.off{background:var(--text-4);opacity:.5}
+  .avatar{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;background:var(--bg-3);border:1px solid var(--border-2);font-size:12px;font-weight:600;color:var(--text-2);flex:none}
+  .me-name{font-size:12.5px;color:var(--text-3);max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  /* ---------- tab ---------- */
+  .tabs{display:flex;gap:4px;margin-bottom:16px;flex-wrap:wrap}
+  .tab{padding:6px 13px;border-radius:9px;border:1px solid transparent;background:transparent;color:var(--text-3);font:inherit;font-size:12.5px;cursor:pointer;transition:background .15s,color .15s}
+  .tab:hover{background:var(--bg-3);color:var(--text-1)}
+  .tab[aria-selected="true"]{background:var(--bg-3);color:var(--text-1);border-color:var(--border-2)}
+  .tab .n{color:var(--text-4);margin-left:5px}
+
+  /* ---------- 卡片（对齐 .ts-session） ---------- */
+  .list{display:flex;flex-direction:column;gap:10px}
+  .card{
+    display:grid;grid-template-columns:minmax(0,1fr) auto;gap:20px;
+    padding:16px 18px 16px 24px;border-radius:var(--r-lg);
+    background:linear-gradient(178deg,var(--bg-2),var(--bg-1) 78%);
+    border:1px solid var(--border);box-shadow:var(--shadow-1);
+    transition:border-color .15s,box-shadow .15s;
+  }
+  .card:hover{border-color:var(--border-2);box-shadow:0 6px 18px -10px rgba(0,0,0,.6)}
+  .card[data-open="true"]{border-color:var(--border-2);background:linear-gradient(178deg,var(--bg-3),var(--bg-2) 78%)}
+  .card-main{min-width:0;cursor:pointer}
+  .card-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px}
+  .card-title{margin:0;font-size:15px;font-weight:600;letter-spacing:-.008em;line-height:1.35}
+  .card-desc{margin:0;font-size:13px;color:var(--text-3);line-height:1.6;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .card-meta{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:10px;font-size:12px;color:var(--text-4)}
+  .card-meta > span{display:inline-flex;align-items:center;gap:5px}
+  .author{display:inline-flex;align-items:center;gap:6px}
+  .avatar-xs{width:18px;height:18px;border-radius:50%;display:grid;place-items:center;font-size:10.5px;font-weight:700;color:#fff;flex:none}
+
+  .card-side{display:flex;flex-direction:column;justify-content:space-between;align-items:flex-end;gap:12px;min-width:132px}
+  .card-time{font-size:12px;color:var(--text-4);white-space:nowrap}
+  .card-actions{display:flex;align-items:center;gap:8px}
+
+  /* ---------- 徽章（对齐 .ts-badge） ---------- */
+  .badge{display:inline-flex;align-items:center;gap:6px;height:21px;padding:0 9px;border-radius:var(--pill);font-size:11.5px;font-weight:600;letter-spacing:.02em;white-space:nowrap}
+  .badge::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.9}
+  .badge.ok{color:var(--ok);background:#00C2711A}
+  .badge.warn{color:var(--warn);background:#FF96361A}
+  .badge.mute{color:var(--text-4);background:#EBF0F50D}
+
+  /* ---------- 按钮（对齐 .ts-btn） ---------- */
+  .btn{appearance:none;font:inherit;font-size:12.5px;padding:6px 12px;border:1px solid var(--border-2);background:var(--bg-3);color:var(--text-1);border-radius:8px;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:6px;transition:background .15s,border-color .15s}
+  .btn:hover{background:#EBF0F50F;border-color:#EBF0F540}
+  .btn:active{transform:scale(.97)}
+  .btn[data-primary="true"]{background:var(--accent);border-color:transparent;color:#fff;font-weight:600}
+  .btn[data-primary="true"]:hover{filter:brightness(1.06)}
+  .btn[disabled]{opacity:.5;cursor:default}
+  .btn-sm{padding:4px 10px;font-size:12px}
+
+  /* ---------- 展开区 ---------- */
+  .card-detail{grid-column:1 / -1;margin-top:2px;padding-top:14px;border-top:1px solid var(--border)}
+  pre{margin:0;padding:14px;background:var(--bg-0);border:1px solid var(--border);border-radius:var(--r-md);font-size:12.5px;line-height:1.7;white-space:pre-wrap;word-break:break-word;max-height:420px;overflow:auto;font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+  .detail-actions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center}
+
+  .empty{padding:56px 20px;text-align:center;color:var(--text-4);border:1px dashed var(--border);border-radius:var(--r-lg);font-size:13px}
+  .loading{padding:40px;text-align:center;color:var(--text-4);font-size:13px}
+  .err{color:#FF8A8A;font-size:13px;padding:12px 0}
+
+  /* ---------- toast / 手动复制 ---------- */
+  .toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:#2b303a;border:1px solid var(--border-2);color:var(--text-1);padding:9px 18px;border-radius:10px;font-size:13px;opacity:0;pointer-events:none;transition:opacity .2s;z-index:50}
+  .toast.show{opacity:1}
+  .mask{position:fixed;inset:0;background:rgba(0,0,0,.62);display:grid;place-items:center;padding:24px;z-index:80}
+  .panel{width:min(680px,92vw);background:var(--bg-2);border:1px solid var(--border-2);border-radius:var(--r-lg);padding:18px;display:flex;flex-direction:column;gap:10px;box-shadow:0 32px 80px -32px rgba(0,0,0,.8)}
+  .panel-title{font-size:15px;font-weight:600}
+  .panel-hint{font-size:12.5px;color:var(--text-3)}
+  .manual{width:100%;height:220px;padding:12px;border-radius:var(--r-md);border:1px solid var(--border-2);background:var(--bg-0);color:var(--text-1);font:12.5px/1.7 ui-monospace,"SF Mono",Menlo,Consolas,monospace;resize:vertical}
+
+  @media (max-width:720px){
+    .wrap{padding:18px 16px 56px}
+    h1{font-size:21px}
+    .card{grid-template-columns:1fr;gap:12px;padding:14px 16px}
+    .card-side{flex-direction:row;align-items:center;justify-content:space-between;min-width:0}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <h1>团队空间</h1>
+      <button class="icon-btn" id="refresh" type="button" title="刷新" aria-label="刷新">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
+      </button>
+      <a class="btn btn-sm" href="/api/team-space/guide" target="_blank" rel="noopener">教程</a>
+      <span class="sub">只读门户 · 无需安装客户端</span>
+    </div>
+    <div class="stat" id="stat"></div>
+    <div class="me" id="me"></div>
+  </header>
+
+  <div class="tabs" id="tabs" role="tablist"></div>
+  <div id="body"><div class="loading">加载中…</div></div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  var API = '/api/team-space'
+  var TABS = [
+    { id: 'skills', label: '技能', key: 'skills' },
+    { id: 'plugins', label: '插件', key: 'plugins' },
+    { id: 'tasks', label: '会话', key: 'tasks' },
+    { id: 'handoffs', label: '委托', key: 'handoffs' },
+    { id: 'repos', label: '仓库', key: 'repos' }
+  ]
+  var ME_KEY = 'team-space-portal:me'
+  var state = { data: null, tab: 'skills', open: {}, details: {}, error: '', panel: false, team: null }
+
+  function el(tag, attrs, children) {
+    var node = document.createElement(tag)
+    if (attrs) Object.keys(attrs).forEach(function (k) {
+      if (k === 'class') node.className = attrs[k]
+      else if (k === 'text') node.textContent = attrs[k]
+      else node.setAttribute(k, attrs[k])
+    })
+    ;(children || []).forEach(function (child) {
+      if (child == null) return
+      node.appendChild(typeof child === 'string' ? document.createTextNode(child) : child)
+    })
+    return node
+  }
+
+  function toast(message) {
+    var box = document.getElementById('toast')
+    box.textContent = message
+    box.classList.add('show')
+    clearTimeout(box._timer)
+    box._timer = setTimeout(function () { box.classList.remove('show') }, 1800)
+  }
+
+  function relTime(value) {
+    if (!value) return ''
+    var diff = Date.now() - value
+    if (diff < 60e3) return '刚刚'
+    if (diff < 3600e3) return Math.floor(diff / 60e3) + ' 分钟前'
+    if (diff < 86400e3) return Math.floor(diff / 3600e3) + ' 小时前'
+    if (diff < 7 * 86400e3) return Math.floor(diff / 86400e3) + ' 天前'
+    return new Date(value).toLocaleDateString('zh-CN')
+  }
+
+  /* ---------------- 身份 ---------------- */
+  function newId() {
+    try { if (window.crypto && crypto.randomUUID) return crypto.randomUUID() } catch (e) {}
+    return 'web-' + Math.random().toString(16).slice(2, 10)
+  }
+
+  function readMe() {
+    try {
+      var raw = localStorage.getItem(ME_KEY)
+      if (raw) {
+        var parsed = JSON.parse(raw)
+        if (parsed && typeof parsed === 'object') {
+          if (!parsed.deviceId) parsed.deviceId = newId()
+          return parsed
+        }
+      }
+    } catch (e) { /* 忽略 */ }
+    return { name: '', deviceId: newId() }
+  }
+
+  function saveMe(me) {
+    try { localStorage.setItem(ME_KEY, JSON.stringify(me)) } catch (e) { /* 隐私模式写不了 */ }
+  }
+
+  var JOIN_TTL = 15 * 60 * 1000
+
+  /** 在线判定与插件版一致：seenAt/at 在 15 分钟内算在线。 */
+  function isOnline(device) {
+    var seen = device.seenAt || device.at || 0
+    return Date.now() - seen < JOIN_TTL
+  }
+
+  function loadTeam() {
+    return fetch(API + '/gateway-status')
+      .then(function (r) { return r.ok ? r.json() : null })
+      .then(function (data) { state.team = data; renderMe(); return data })
+      .catch(function () { return null })
+  }
+
+  function togglePanel() {
+    state.panel = !state.panel
+    renderMe()
+  }
+
+  function buildPanel(me) {
+    var panel = el('div', { class: 'me-panel' })
+    var team = state.team || {}
+
+    // 名称
+    var nameValue = el('span', { class: 'panel-value', text: me.name || '未设置' })
+    var nameBtn = el('button', { class: 'btn btn-sm', type: 'button', text: me.name ? '改名' : '设置' })
+    nameBtn.addEventListener('click', function (event) {
+      event.stopPropagation()
+      var next = window.prompt('你的名字（会写进复制出去的指令里）', me.name || '')
+      if (next === null) return
+      var fresh = readMe()
+      fresh.name = String(next).trim().slice(0, 24)
+      saveMe(fresh)
+      renderMe()
+      toast(fresh.name ? '身份已保存' : '已清除身份')
+    })
+    panel.appendChild(el('div', { class: 'panel-row' }, [
+      el('span', { class: 'panel-label', text: '名称' }), nameValue, nameBtn
+    ]))
+
+    // 设备情况
+    var devices = team.devices || []
+    var online = devices.filter(isOnline).length
+    panel.appendChild(el('div', { class: 'panel-sep' }))
+    panel.appendChild(el('div', { class: 'panel-row' }, [
+      el('span', { class: 'panel-label', text: '设备' }),
+      el('span', { class: 'panel-value', text: online + ' 台在线 / 共 ' + devices.length + ' 台' })
+    ]))
+    if (devices.length) {
+      var list = el('div', { class: 'dev-list' })
+      devices
+        .slice()
+        .sort(function (a, b) { return (b.seenAt || b.at || 0) - (a.seenAt || a.at || 0) })
+        .forEach(function (device) {
+          var on = isOnline(device)
+          var label = device.name || String(device.deviceId || '').slice(0, 8)
+          list.appendChild(el('div', { class: 'dev-item' }, [
+            el('span', { class: 'dot ' + (on ? 'on' : 'off') }),
+            el('span', { class: 'dev-name', text: label }),
+            // IP 是「哪台机器」的唯一线索；没记录到就不显示占位
+            device.ip ? el('span', { class: 'dev-ip', text: device.ip }) : null
+          ]))
+        })
+      panel.appendChild(list)
+    }
+
+    // 加入地址
+    panel.appendChild(el('div', { class: 'panel-sep' }))
+    var host = team.host || ''
+    var hostBtn = el('button', { class: 'btn btn-sm', type: 'button', text: '复制' })
+    hostBtn.addEventListener('click', function (event) {
+      event.stopPropagation()
+      copy(host, '加入地址已复制')
+    })
+    panel.appendChild(el('div', { class: 'panel-row' }, [
+      el('span', { class: 'panel-label', text: '加入地址' }),
+      el('span', { class: 'panel-value', text: host || '读取中…' }),
+      hostBtn
+    ]))
+
+    return panel
+  }
+
+  function renderMe() {
+    var box = document.getElementById('me')
+    if (!box) return
+    box.textContent = ''
+    var me = readMe()
+    var initial = me.name ? me.name.slice(0, 1).toUpperCase() : '?'
+    var avatar = el('span', { class: 'avatar', text: initial })
+    if (me.name) avatar.style.background = avatarColor(me.name)
+    var trigger = el('button', { class: 'me-trigger', type: 'button', title: '身份与设备' }, [
+      avatar,
+      el('span', { class: 'me-name', text: me.name || '未设置身份' }),
+      el('span', { class: 'caret', text: '▾' })
+    ])
+    trigger.addEventListener('click', function (event) {
+      event.stopPropagation()
+      togglePanel()
+    })
+    box.appendChild(trigger)
+    if (state.panel) box.appendChild(buildPanel(me))
+  }
+
+  /* ---------------- 复制（三级兜底） ---------------- */
+  function copy(text, okMessage) {
+    var done = function () { toast(okMessage || '已复制') }
+    var fail = function () { showManualCopy(text) }
+    if (window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fail)
+      return
+    }
+    if (fallbackCopy(text)) done()
+    else fail()
+  }
+
+  function fallbackCopy(text) {
+    var area = document.createElement('textarea')
+    area.value = text
+    area.setAttribute('readonly', 'readonly')
+    area.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;outline:0;background:transparent;opacity:0'
+    document.body.appendChild(area)
+    area.focus()
+    area.select()
+    try { area.setSelectionRange(0, text.length) } catch (e) { /* 老浏览器 */ }
+    var ok = false
+    try { ok = document.execCommand('copy') } catch (e) { ok = false }
+    document.body.removeChild(area)
+    return ok
+  }
+
+  function showManualCopy(text) {
+    var mask = el('div', { class: 'mask' })
+    var panel = el('div', { class: 'panel' }, [
+      el('div', { class: 'panel-title', text: '浏览器不允许自动复制' }),
+      el('div', { class: 'panel-hint', text: '内容已全选，按 Ctrl/⌘ + C 复制，然后关掉这个框' })
+    ])
+    var area = document.createElement('textarea')
+    area.className = 'manual'
+    area.value = text
+    area.setAttribute('readonly', 'readonly')
+    panel.appendChild(area)
+    var close = el('button', { class: 'btn', type: 'button', text: '关闭' })
+    close.addEventListener('click', function () { document.body.removeChild(mask) })
+    panel.appendChild(el('div', { class: 'detail-actions' }, [close]))
+    mask.appendChild(panel)
+    mask.addEventListener('click', function (event) {
+      if (event.target === mask) document.body.removeChild(mask)
+    })
+    document.body.appendChild(mask)
+    area.focus()
+    area.select()
+  }
+
+  /* ---------------- 数据 ---------------- */
+  function detailFor(tab, row) {
+    var table = tab.id === 'tasks' ? 'tasks' : tab.id
+    return fetch(API + '/detail?table=' + encodeURIComponent(table) + '&id=' + encodeURIComponent(row.id))
+      .then(function (r) { return r.json() })
+      .then(function (json) { return json.entry || {} })
+  }
+
+  function bodyTextOf(entry) {
+    if (!entry) return ''
+    return entry.content || entry.text || entry.brief || entry.result || ''
+  }
+
+  /* ---------------- 徽章 ---------------- */
+  function badgeOf(tab, row) {
+    if (tab.id === 'handoffs') {
+      var map = { open: ['待接', 'warn'], doing: ['进行中', 'warn'], done: ['已完成', 'ok'] }
+      var hit = map[row.status] || [row.status || '未知', 'mute']
+      return el('span', { class: 'badge ' + hit[1], text: hit[0] })
+    }
+    if (tab.id === 'plugins') return el('span', { class: 'badge mute', text: 'v' + (row.version || '—') })
+    if (tab.id === 'skills') return el('span', { class: 'badge ' + (row.installed ? 'ok' : 'mute'), text: row.installed ? '已安装' : '未安装' })
+    if (tab.id === 'tasks') return el('span', { class: 'badge mute', text: 'seq ' + (row.throughSeq || 0) })
+    return null
+  }
+
+  function avatarColor(name) {
+    var palette = ['#4a7fc1', '#8a5fa1', '#4f9c72', '#b8863f', '#a85c5c', '#5a76c4']
+    var sum = 0
+    for (var i = 0; i < String(name).length; i++) sum += String(name).charCodeAt(i)
+    return palette[sum % palette.length]
+  }
+
+  function authorNode(row) {
+    var name = row.author && row.author.name ? row.author.name : ''
+    if (!name) return null
+    var avatarUrl = row.author && row.author.avatar
+    var node
+    if (avatarUrl) {
+      node = el('img', { class: 'avatar-xs', src: avatarUrl, alt: '' })
+    } else {
+      node = el('span', { class: 'avatar-xs', text: name.slice(0, 1).toUpperCase() })
+      node.style.background = avatarColor(name)
+    }
+    return el('span', { class: 'author' }, [node, name])
+  }
+
+  /* ---------------- 渲染 ---------------- */
+  function renderTabs() {
+    var box = document.getElementById('tabs')
+    box.textContent = ''
+    TABS.forEach(function (tab) {
+      var rows = (state.data && state.data.tables[tab.key]) || []
+      var button = el('button', {
+        class: 'tab',
+        role: 'tab',
+        'aria-selected': String(state.tab === tab.id),
+        type: 'button'
+      }, [tab.label, el('span', { class: 'n', text: String(rows.length) })])
+      button.addEventListener('click', function () { state.tab = tab.id; render() })
+      box.appendChild(button)
+    })
+  }
+
+  function renderStat() {
+    var box = document.getElementById('stat')
+    box.textContent = ''
+    if (!state.data) return
+    var counts = state.data.counts || {}
+    var online = state.data.onlineDevices
+    if (online != null) box.appendChild(el('span', {}, ['在线设备 ', el('b', { text: String(online) })]))
+    box.appendChild(el('span', {}, ['技能 ', el('b', { text: String(counts.skills || 0) })]))
+    box.appendChild(el('span', {}, ['委托 ', el('b', { text: String(counts.handoffs || 0) })]))
+  }
+
+  function quickCopyButton(tab, row) {
+    var verb = tab.id === 'handoffs' ? '复制认领' : tab.id === 'plugins' ? '复制安装' : '复制'
+    var btn = el('button', { class: 'btn btn-sm', type: 'button', text: verb })
+    btn.addEventListener('click', function (event) {
+      event.stopPropagation()
+      if (tab.id === 'handoffs') {
+        var me = readMe()
+        var who = me.name ? '认领人：' + me.name + '。' : ''
+        copy('请用 team-space MCP 的 team_space_claim_handoff 工具认领委托「' + (row.title || '') + '」，id 是 ' + row.id + '。' + who)
+        return
+      }
+      if (tab.id === 'plugins') { copy(row.installCommand || '', '安装命令已复制'); return }
+      if (tab.id === 'repos') { copy(row.url || '', '仓库地址已复制'); return }
+      btn.disabled = true
+      btn.textContent = '读取中…'
+      detailFor(tab, row).then(function (entry) {
+        btn.disabled = false
+        btn.textContent = verb
+        var text = bodyTextOf(entry)
+        if (text) copy(text)
+        else toast('这条没有正文')
+      }).catch(function () {
+        btn.disabled = false
+        btn.textContent = verb
+        toast('读取失败')
+      })
+    })
+    return btn
+  }
+
+  function buttonEl(label, onClick) {
+    var button = el('button', { class: 'btn btn-sm', type: 'button', text: label })
+    button.addEventListener('click', function (event) { event.stopPropagation(); onClick() })
+    return button
+  }
+
+  function renderDetail(tab, row, name) {
+    var detail = state.details[row.id]
+    var wrap = el('div', { class: 'card-detail' })
+    if (!detail) {
+      wrap.appendChild(el('div', { class: 'loading', text: '加载正文…' }))
+      return wrap
+    }
+    var text = bodyTextOf(detail)
+    if (text) wrap.appendChild(el('pre', { text: text }))
+    if (tab.id === 'handoffs' && detail.result) {
+      wrap.appendChild(el('div', { class: 'card-meta' }, [el('span', { text: '结果' })]))
+      wrap.appendChild(el('pre', { text: detail.result }))
+    }
+
+    var actions = el('div', { class: 'detail-actions' })
+    if (text) actions.appendChild(buttonEl('复制正文', function () { copy(text) }))
+    if (tab.id === 'skills') {
+      actions.appendChild(buttonEl('复制 MCP 指令', function () {
+        copy('请用 team-space MCP 的 team_space_get_skill 工具读取技能「' + name + '」的正文。')
+      }))
+      actions.appendChild(buttonEl('复制安装指令', function () {
+        copy('请把团队空间的技能「' + name + '」安装到你的 Codex：\n'
+          + '1) 调用 team-space MCP 的 team_space_get_skill 取回正文；\n'
+          + '2) 写入 ~/.codex/skills/' + name + '/SKILL.md。')
+      }))
+    }
+    if (tab.id === 'tasks') {
+      actions.appendChild(buttonEl('复制 MCP 指令', function () {
+        copy('请用 team-space MCP 的 team_space_get_session 工具读取会话「' + name + '」的正文。')
+      }))
+      if (row.sessionId) actions.appendChild(el('span', { class: 'card-time', text: '会话 ' + String(row.sessionId).slice(0, 12) + '…' }))
+    }
+    if (tab.id === 'handoffs') {
+      actions.appendChild(buttonEl('复制认领指令', function () {
+        var me = readMe()
+        var who = me.name ? '认领人：' + me.name + '。' : ''
+        copy('请用 team-space MCP 的 team_space_claim_handoff 工具认领委托「' + name + '」，id 是 ' + row.id + '。' + who)
+      }))
+    }
+    if (tab.id === 'plugins' && row.installCommand) {
+      actions.appendChild(buttonEl('复制安装命令', function () { copy(row.installCommand) }))
+    }
+    if (tab.id === 'repos' && row.url) {
+      actions.appendChild(buttonEl('复制仓库地址', function () { copy(row.url) }))
+    }
+    if (actions.childNodes.length) wrap.appendChild(actions)
+    return wrap
+  }
+
+  function renderItem(tab, row) {
+    var open = !!state.open[row.id]
+    var name = row.name || row.title || '（未命名）'
+    var desc = row.description || row.preview || row.brief || row.note || ''
+    var when = relTime(row.updatedAt || row.createdAt)
+
+    var main = el('div', { class: 'card-main' }, [
+      el('div', { class: 'card-head' }, [
+        el('h3', { class: 'card-title', text: name }),
+        badgeOf(tab, row)
+      ]),
+      desc ? el('p', { class: 'card-desc', text: desc }) : null,
+      (function () {
+        var items = []
+        var author = authorNode(row)
+        if (author) items.push(author)
+        if (tab.id === 'tasks' && row.messageCount) items.push(el('span', { text: row.messageCount + ' 条消息' }))
+        if (tab.id === 'tasks' && row.files && row.files.length) items.push(el('span', { text: row.files.length + ' 个文件' }))
+        if (tab.id === 'handoffs' && row.target) items.push(el('span', { text: '→ ' + (row.target === 'any' ? '任何人' : row.target) }))
+        if (!items.length) return null
+        return el('div', { class: 'card-meta' }, items)
+      })()
+    ])
+
+    main.addEventListener('click', function () {
+      state.open[row.id] = !state.open[row.id]
+      if (state.open[row.id] && !state.details[row.id]) {
+        detailFor(tab, row).then(function (entry) {
+          state.details[row.id] = entry
+          render()
+        }).catch(function () { state.details[row.id] = {}; render() })
+      } else {
+        render()
+      }
+    })
+
+    var side = el('div', { class: 'card-side' }, [
+      el('span', { class: 'card-time', text: when }),
+      el('div', { class: 'card-actions' }, [quickCopyButton(tab, row)])
+    ])
+
+    var card = el('article', { class: 'card', 'data-open': String(open) }, [main, side])
+    if (open) card.appendChild(renderDetail(tab, row, name))
+    return card
+  }
+
+  /** 与插件版同一条排序规则：updatedAt 优先，没有就用 createdAt，降序。 */
+  function lastTouched(row) {
+    var value = row.updatedAt != null ? row.updatedAt : row.createdAt
+    return typeof value === 'number' && isFinite(value) ? value : 0
+  }
+
+  function renderBody() {
+    var box = document.getElementById('body')
+    box.textContent = ''
+    if (state.error) {
+      box.appendChild(el('div', { class: 'err', text: '加载失败：' + state.error }))
+      return
+    }
+    if (!state.data) {
+      box.appendChild(el('div', { class: 'loading', text: '加载中…' }))
+      return
+    }
+    var tab = TABS.filter(function (t) { return t.id === state.tab })[0]
+    var rows = (state.data.tables[tab.key] || []).slice().sort(function (a, b) { return lastTouched(b) - lastTouched(a) })
+    if (!rows.length) {
+      box.appendChild(el('div', { class: 'empty', text: '这里还没有内容' }))
+      return
+    }
+    var list = el('div', { class: 'list' })
+    rows.forEach(function (row) { list.appendChild(renderItem(tab, row)) })
+    box.appendChild(list)
+  }
+
+  function render() {
+    renderStat()
+    renderTabs()
+    renderBody()
+  }
+
+  function load() {
+    fetch(API + '/list')
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json() })
+      .then(function (json) { state.data = json; state.error = ''; render() })
+      .catch(function (error) { state.error = error.message; render() })
+  }
+
+  renderMe()
+  loadTeam()
+  document.addEventListener('click', function () {
+    if (state.panel) { state.panel = false; renderMe() }
+  })
+  document.getElementById('refresh').addEventListener('click', function () {
+    var btn = this
+    btn.classList.add('spinning')
+    state.details = {}
+    load()
+    setTimeout(function () { btn.classList.remove('spinning') }, 700)
+  })
+  load()
+})()
+</script>
+</body>
+</html>
