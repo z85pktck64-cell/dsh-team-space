@@ -224,7 +224,13 @@ async function runCrossEnd(base) {
     /@keyframes ts-toast-in\{from\{opacity:0;transform:translate\(-50%/.test(clientSrc)
     && /to\{opacity:1;transform:translate\(-50%/.test(clientSrc))
 
-  // 15) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
+  // 15) loader 行的 name 必须加引号：@ * & 等在 YAML 是保留字符，
+  //     `name: @local/x` 会让整个 profile 解析失败 → DSH 启动闪退（Neo 踩过）
+  ok('loader 行 name 加了引号（YAML 保留字符）',
+    /name: \$\{JSON\.stringify\(name\)\}/.test(indexSrc),
+    'name 还是裸写，@ 开头的值会让 YAML 解析失败')
+
+  // 16) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
   let readme = ''
   try { readme = readFileSync(root + 'README.md', 'utf8') } catch { /* 没有就报红 */ }
   ok('README 保留三端同步约定', readme.includes('三个消费方'))
