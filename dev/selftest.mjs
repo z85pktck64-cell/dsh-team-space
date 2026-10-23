@@ -139,7 +139,15 @@ async function runCrossEnd(base) {
     !/https?:\/\/\S+\.tgz["']/.test(cmd),
     cmd ? `实际：${cmd.slice(0, 70)}` : '没有 installCommand')
 
-  // 8) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
+  // 8) installCopy 是 async，所有调用点必须 await：
+  //    不等待的话 finally 会先删掉临时目录，cp 报 "No such file or directory"（包越大越容易踩）
+  const copyCalls = [...indexSrc.matchAll(/(\n\s*)(await\s+)?installCopy\(/g)]
+  const unawaited = copyCalls.filter(m => !m[2])
+  ok(`installCopy 的调用都带 await（${copyCalls.length} 处）`,
+    copyCalls.length > 0 && unawaited.length === 0,
+    unawaited.length ? `缺 await：${unawaited.length} 处` : '')
+
+  // 9) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
   let readme = ''
   try { readme = readFileSync(root + 'README.md', 'utf8') } catch { /* 没有就报红 */ }
   ok('README 保留三端同步约定', readme.includes('三个消费方'))
