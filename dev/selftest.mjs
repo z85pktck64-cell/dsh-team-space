@@ -90,7 +90,7 @@ async function runCrossEnd(base) {
   const clientSrc = readFileSync(root + 'lib/client.js', 'utf8')
   const indexSrc = readFileSync(root + 'lib/index.js', 'utf8')
   const portalSrc = readFileSync(root + 'lib/portal.html', 'utf8')
-  const mcpSrc = readFileSync(root + 'dev/mcp-server.mjs', 'utf8')
+  const mcpSrc = readFileSync(root + 'lib/mcp-tools.js', 'utf8')
 
   // 1) isSelf 不能再按插件名判断：那对所有成员都成立，等于成员永远不能更新
   ok('isSelf 不按插件名判断（成员端才暴露的坑）',
@@ -120,6 +120,11 @@ async function runCrossEnd(base) {
   ok(`MCP 工具与处理器一一对应（${toolNames.length} 个工具）`,
     toolNames.length > 0 && missing.length === 0,
     missing.length ? `缺处理器：${missing.join(', ')}` : '')
+  // stdio 那半必须只做传输：工具定义留在 mcp-tools.js，抄回一份就会两处走样
+  const stdioSrc = readFileSync(root + 'dev/mcp-server.mjs', 'utf8')
+  ok('stdio 传输层没有重复定义工具',
+    !/name: 'team_space_/.test(stdioSrc),
+    'dev/mcp-server.mjs 里又出现了工具定义')
 
   // 5) 门户页调的接口，服务端必须有对应路由
   const portalPaths = [...portalSrc.matchAll(/API \+ '(\/[a-z-]+)/g)].map(m => m[1])
@@ -147,7 +152,38 @@ async function runCrossEnd(base) {
     copyCalls.length > 0 && unawaited.length === 0,
     unawaited.length ? `缺 await：${unawaited.length} 处` : '')
 
-  // 9) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
+  // 9) HTTP MCP：同事零安装的关键路径，必须能握手、能列工具、能真调用
+  const rpc = async body => {
+    const response = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    return response.json()
+  }
+  const init = await rpc({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }).catch(() => null)
+  ok('HTTP MCP 能握手（POST /mcp）',
+    init?.result?.protocolVersion && init?.result?.serverInfo?.name === 'team-space',
+    init?.error ? String(init.error.message) : '没有返回 protocolVersion')
+
+  const listRpc = await rpc({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }).catch(() => null)
+  const httpTools = (listRpc?.result?.tools ?? []).map(t => t.name)
+  ok(`HTTP MCP 列出 ${httpTools.length} 个工具`, httpTools.length === 9,
+    `实际 ${httpTools.length} 个`)
+
+  const callRpc = await rpc({
+    jsonrpc: '2.0', id: 3, method: 'tools/call',
+    params: { name: 'team_space_list_skills', arguments: {} },
+  }).catch(() => null)
+  let skillOk = false
+  try {
+    const payload = JSON.parse(callRpc?.result?.content?.[0]?.text ?? '{}')
+    skillOk = typeof payload.count === 'number' && payload.count > 0
+  } catch { skillOk = false }
+  ok('HTTP MCP 能真调用（list_skills 返回条目数）', skillOk,
+    callRpc?.result?.isError ? String(callRpc.result.content?.[0]?.text).slice(0, 60) : '返回格式异常')
+
+  // 10) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
   let readme = ''
   try { readme = readFileSync(root + 'README.md', 'utf8') } catch { /* 没有就报红 */ }
   ok('README 保留三端同步约定', readme.includes('三个消费方'))
