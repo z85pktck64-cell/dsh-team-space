@@ -47,6 +47,7 @@ echo "== 3/5 打包 =="
 rm -f "$TARBALL"
 tar -czf "$TARBALL" \
   --exclude node_modules --exclude .git --exclude '.bak-*' --exclude '*.bak-*' \
+  --exclude 'docs/images' --exclude 'docs/*.png' \
   -C "$(dirname "$REPO")" "$(basename "$REPO")"
 ls -la "$TARBALL" | awk '{print "  " $5 " 字节  " $NF}'
 
