@@ -120,7 +120,7 @@ ${css}
           <span class="ts-conn-state" data-on="true"><span class="ts-dot"></span>已开启</span>
         </div>
         <div class="ts-pop-row"><span class="ts-pop-k">能力卡</span><div class="ts-caps"><span class="ts-cap-empty">客户端开发 / 车机 / 移动端…</span><button class="ts-cap-action">编辑</button></div></div>
-        <div class="ts-pop-row"><span class="ts-pop-k">域名</span><span class="ts-pop-v mono">http://192.168.42.124:8080</span></div>
+        <div class="ts-pop-row"><span class="ts-pop-k">域名</span><span class="ts-pop-v mono"></span></div>
         <div class="ts-pop-row"><span class="ts-pop-k">已加入</span><span class="ts-pop-v"><b>2</b> 台设备</span></div>
         <div class="ts-pop-row">
           <span class="ts-pop-k">委托</span>
@@ -128,7 +128,7 @@ ${css}
         </div>
         <div class="ts-pop-row ts-join">
           <span class="ts-pop-k">加入</span>
-          <input class="ts-pop-input" value="192.168.42.124:8080">
+          <input class="ts-pop-input" value="">
           <button class="ts-pop-go"><svg class="ts-i ts-i-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h13"/><path d="m12 6 6 6-6 6"/></svg></button>
         </div>
       </div>
