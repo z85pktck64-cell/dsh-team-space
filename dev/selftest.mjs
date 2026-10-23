@@ -193,7 +193,16 @@ async function runCrossEnd(base) {
   ok('cp 前会检查源目录是否还在',
     /安装临时目录已被清理/.test(indexSrc))
 
-  // 11) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
+  // 11) 「不能更新自己」的保护必须按 link 判断，不能按插件名：
+  //     按名字会拦住所有成员（他们装的也是这个名字），点确认启用永远 403
+  const enableBlock = indexSrc.slice(indexSrc.indexOf('/plugin/enable'))
+  ok('plugin/enable 不按插件名拦 dsh-team-space',
+    !/if \(\/\^\(\@\[\^\/\]\+\\\/\?\)\?dsh-team-space\$\/\|不能安装\/更新正在运行的团队空间自己/.test(enableBlock.slice(0, 800)),
+    'enable 里还在按名字拦截')
+  ok('link 安装的保护挪到了替换目录前',
+    /本机是 link 安装（发布者机器）/.test(indexSrc))
+
+  // 12) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
   let readme = ''
   try { readme = readFileSync(root + 'README.md', 'utf8') } catch { /* 没有就报红 */ }
   ok('README 保留三端同步约定', readme.includes('三个消费方'))
@@ -494,7 +503,8 @@ async function run(base) {
     /compareVersion\(item\.installedVersion, item\.version\)/.test(clientSource))
   // 点「更新」团队空间自己会把 link 换成真目录，运行中的宿主直接崩（实测过一次）。
   ok('客户端禁用更新自己', /const isSelf =/.test(clientSource))
-  ok('宿主端拒绝更新自己', /不能安装\/更新正在运行的团队空间自己/.test(indexSource))
+  // 保护挪到了「替换目录前」并按 link 判断：按插件名拦会连成员一起拦死
+  ok('宿主端在替换目录前拒绝 link 安装', /本机是 link 安装（发布者机器）/.test(indexSource))
 
   console.log('委托可见性（真实接口）')
   // 用现有数据验：找一个指定了人的委托，陌生人查列表必须看不到，主服务器必须看得到。
