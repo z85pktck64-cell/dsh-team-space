@@ -210,7 +210,13 @@ async function runCrossEnd(base) {
     (indexSrc.match(/const localSlot = join\(base, '@local', short\)/g) ?? []).length >= 2,
     '两处 dest 计算不一致，装到 A 却在 B 找')
 
-  // 13) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
+  // 13) loader 行的 name 必须写相对路径（@local/x 或 x），不能只写短名：
+  //     装到 @local 却写短名，加载器按 name 找不到包就静默跳过（Neo 的插件消失就是这个）
+  ok('loader 行用相对路径而非短名',
+    /const name = entry \|\| shortName/.test(indexSrc)
+    && /enablePluginRow\(dirname\(base\), dest, short, bundleEntry\)/.test(indexSrc))
+
+  // 14) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
   let readme = ''
   try { readme = readFileSync(root + 'README.md', 'utf8') } catch { /* 没有就报红 */ }
   ok('README 保留三端同步约定', readme.includes('三个消费方'))
