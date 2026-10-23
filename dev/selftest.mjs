@@ -202,7 +202,15 @@ async function runCrossEnd(base) {
   ok('link 安装的保护挪到了替换目录前',
     /本机是 link 安装（发布者机器）/.test(indexSrc))
 
-  // 12) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
+  // 12) 启用必须同时写 bundles，否则重启不加载（装到 @local 但 bundles 指旧路径）
+  ok('enable 会登记 profile 的 bundles',
+    /function registerProfileBundle/.test(indexSrc)
+    && /registerProfileBundle\(dirname\(base\)/.test(indexSrc))
+  ok('install-plugin 与 enable 用同一套安装位置判断',
+    (indexSrc.match(/const localSlot = join\(base, '@local', short\)/g) ?? []).length >= 2,
+    '两处 dest 计算不一致，装到 A 却在 B 找')
+
+  // 13) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
   let readme = ''
   try { readme = readFileSync(root + 'README.md', 'utf8') } catch { /* 没有就报红 */ }
   ok('README 保留三端同步约定', readme.includes('三个消费方'))
