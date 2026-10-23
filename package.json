@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-team-space",
-  "version": "2.7.61",
+  "version": "2.7.62",
   "private": false,
   "type": "module",
   "description": "DSH plugin: LAN team space for AI coding sessions — share, claim and return sessions across machines, plus shared skills, plugins & git index.",

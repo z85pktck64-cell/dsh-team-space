@@ -20,7 +20,7 @@
  * 环境变量：
  *   TEAM_SPACE_URL        团队空间网关地址（默认 http://127.0.0.1:8080）
  *   TEAM_SPACE_DEVICE_ID  调用者设备 id（写操作要用；默认 'codex'）
- *   TEAM_SPACE_USER       调用者显示名（默认 'Codex'）
+ *   TEAM_SPACE_USER       调用者显示名（默认 'MCP 客户端'）
  */
 
 import { createHandlers, handleRpc } from '../lib/mcp-tools.js'
@@ -29,7 +29,7 @@ const BASE = (process.env.TEAM_SPACE_URL || 'http://127.0.0.1:8080').replace(/\/
 const handlers = createHandlers({
   apiBase: `${BASE}/api/team-space`,
   device: process.env.TEAM_SPACE_DEVICE_ID || 'codex',
-  user: process.env.TEAM_SPACE_USER || 'Codex',
+  user: process.env.TEAM_SPACE_USER || 'MCP 客户端',
 })
 
 function send(payload) {
