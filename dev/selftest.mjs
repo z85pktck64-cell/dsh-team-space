@@ -183,7 +183,17 @@ async function runCrossEnd(base) {
   ok('HTTP MCP 能真调用（list_skills 返回条目数）', skillOk,
     callRpc?.result?.isError ? String(callRpc.result.content?.[0]?.text).slice(0, 60) : '返回格式异常')
 
-  // 10) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
+  // 10) 并发安装护栏：两次「更新」不能共用同一个临时目录
+  ok('install-plugin 有并发锁（INSTALL_LOCKS）',
+    /const INSTALL_LOCKS = new Set\(\)/.test(indexSrc)
+    && /INSTALL_LOCKS\.has\(name\)/.test(indexSrc)
+    && /INSTALL_LOCKS\.delete\(name\)/.test(indexSrc))
+  ok('临时目录名带随机后缀（不用裸 Date.now）',
+    /const stamp = `\$\{Date\.now\(\)\}-\$\{randomUUID\(\)/.test(indexSrc))
+  ok('cp 前会检查源目录是否还在',
+    /安装临时目录已被清理/.test(indexSrc))
+
+  // 11) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
   let readme = ''
   try { readme = readFileSync(root + 'README.md', 'utf8') } catch { /* 没有就报红 */ }
   ok('README 保留三端同步约定', readme.includes('三个消费方'))
