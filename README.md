@@ -80,11 +80,70 @@ F-Assign（`handoffs`）**不走通用 upsert**：它只能由 `/handoff/{create
 
 | 文件 | 作用 |
 |---|---|
-| `lib/index.js` | 宿主半：`ctx.sessionQuery.readSession` 读会话 + `/api/team-space/{list,share,remove}` |
-| `lib/client.js` | 浏览器半：会话菜单项 + 侧栏图标 + 列表页面 |
+| `lib/index.js` | 宿主半：39 条路由（`/list` `/detail` `/share` `/claim` `/handoff/*` `/install-*` `/portal` …） |
+| `lib/client.js` | 浏览器半：DSH 内的侧栏页面 |
+| `lib/portal.html` | **独立门户页**：浏览器直开，不依赖 DSH 的 UI |
+| `lib/guide.html` | 教程页 |
+| `dev/mcp-server.mjs` | **Codex MCP 服务**：stdio，9 个工具（读 + 写委托） |
+| `dev/install-web-profile.sh` | 把插件装进网页版 profile |
+| `dev/selftest.mjs` | 离线自检 |
 | `cordis.patch.yml` | 插入 `team-space` 行 |
 | `locale/{zh,en}.json` | 插件页标题与描述 |
 | `icon.svg` | 插件图标 |
+
+## 三个消费方（改动必须同步）
+
+团队空间现在有**三个独立前端**在消费同一份数据，任何一侧的改动都要问另外两侧：
+
+| 消费方 | 入口 | 能力 | 代码 |
+|---|---|---|---|
+| **DSH 客户端** | 侧栏「团队空间」 | 全功能（读写、安装、认领、分享） | `lib/client.js` |
+| **Codex** | `~/.codex/config.toml` 的 `[mcp_servers.team-space]` | 9 个工具，读 + 发委托/认领/交结果 | `dev/mcp-server.mjs` |
+| **浏览器** | `http://<IP>:8080/api/team-space/portal` | 只读 + 复制指令（身份为本地名字） | `lib/portal.html` |
+
+### 改动检查清单
+
+**加了新字段 / 新条目类型**：
+- [ ] 宿主 `/list` 的投影带上它（`slim`）
+- [ ] DSH 客户端渲染
+- [ ] 门户页 `renderItem` / `badgeOf` 渲染
+- [ ] MCP 的 `briefXxx` 是否要带出
+
+**加了新接口**：
+- [ ] 判断属于哪个消费方：只给 DSH / 也给 MCP / 也给门户页
+- [ ] MCP 加工具时同步 `TOOLS` 与 `HANDLERS`（两个数组要一一对应）
+- [ ] 门户页用完记得「不用展开就能点」（行内按钮）
+
+**排序 / 过滤规则**：
+- [ ] 服务端 `/list` **不排序**，排序在各前端
+- [ ] DSH 客户端与门户页都用 `updatedAt ?? createdAt` 降序，两处要一致
+
+### 版本发布（两个 profile + 分发包 + git）
+
+改完代码后**四件事一起做**，少一件就会出现「有人看到旧版」：
+
+```sh
+sh dev/release.sh 2.7.54 "改了什么"
+```
+
+它做四步：
+1. bump `package.json` 与 `lib/client.js` 里的版本号
+2. 打包 `dsh-team-space-<版本>.tgz`（排除 `.git` / `node_modules` / `.bak-*`）
+3. 复制到 `~/.dsh/storages/team-space-dist/` 并更新 `team-space.json` 里的 `plugins` 记录
+4. `git add -A && commit && push`
+
+**网页版（web profile）是另一个坑**：它不读 desktop 的 `node_modules`，
+装插件要跑 `dev/install-web-profile.sh`（幂等）。
+
+### 已知的兼容边界
+
+| 项 | 限制 |
+|---|---|
+| 门户页身份 | 浏览器本地名字，**不防冒充**（填谁就是谁） |
+| 门户页拿不到真实 IP | 8080 前面是 remote-access 代理，不透传 `X-Forwarded-For` |
+| 跨源 localStorage | DSH 客户端与门户页**不同源**，身份天然不共享 |
+| 跨设备认领 | 原会话不在主服务器上时只有文本快照，不是完整历史 |
+| Codex 侧 | 需要先配 `[mcp_servers.team-space]` 并重启 Codex，工具才出现 |
 
 ## 安装 / 更新
 
