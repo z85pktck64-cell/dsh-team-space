@@ -1,0 +1,9 @@
+Mock 宿主	A/B/C/D/E/F/J 合约	PASS	113/113 通过，全部通过	/Volumes/本地磁盘：D/DSH/dsh-team-space/docs/测试报告-2026-10-24-自动化与人工-artifacts-20261024-184830/01-mock-host.log	node dev/mock-host.mjs
+存储健壮性	J01/J03	PASS	5/5 通过，全部通过	/Volumes/本地磁盘：D/DSH/dsh-team-space/docs/测试报告-2026-10-24-自动化与人工-artifacts-20261024-184830/02-store.log	node dev/check-store.mjs
+真机自检	路由/状态机/通道/版本闸门	PASS	159/159 通过，全部通过	/Volumes/本地磁盘：D/DSH/dsh-team-space/docs/测试报告-2026-10-24-自动化与人工-artifacts-20261024-184830/03-selftest.log	node dev/selftest.mjs
+P0 冒烟	B16/C05/D10/D11/E05/E07/E08/G03/G05/G11/J06	PASS	27/27 通过，全部通过	/Volumes/本地磁盘：D/DSH/dsh-team-space/docs/测试报告-2026-10-24-自动化与人工-artifacts-20261024-184830/04-p0.log	node dev/e2e-p0.mjs
+UI 回归	H01-H16/B20/C11/G02/G06	PASS	33/33 通过，全部通过	/Volumes/本地磁盘：D/DSH/dsh-team-space/docs/测试报告-2026-10-24-自动化与人工-artifacts-20261024-184830/05-ui.log	env NODE_PATH=/tmp/dsh-e2e-ui/node_modules node dev/e2e-ui.cjs --url=http://127.0.0.1:56404/?token=LShMCN4U73Muu3N48Mkp76E-kaxVNfWxLDcHVZ7oS5o
+断网 UI	J08	PASS	8/8 通过，全部通过	/Volumes/本地磁盘：D/DSH/dsh-team-space/docs/测试报告-2026-10-24-自动化与人工-artifacts-20261024-184830/06-offline.log	env NODE_PATH=/tmp/dsh-e2e-ui/node_modules node dev/e2e-offline.cjs --url=http://127.0.0.1:56404/?token=LShMCN4U73Muu3N48Mkp76E-kaxVNfWxLDcHVZ7oS5o
+重启持久化	J02	PASS	8/8 通过，全部通过	/Volumes/本地磁盘：D/DSH/dsh-team-space/docs/测试报告-2026-10-24-自动化与人工-artifacts-20261024-184830/07-restart.log	node dev/e2e-restart.mjs
+并发/载荷	J04/J07	PASS	17/17 通过，全部通过	/Volumes/本地磁盘：D/DSH/dsh-team-space/docs/测试报告-2026-10-24-自动化与人工-artifacts-20261024-184830/08-concurrency.log	node dev/e2e-j.mjs --a=http://127.0.0.1:56404 --b=http://127.0.0.1:55796
+成员端 / J09（neo）	成员端 17 项 + J09	PASS	17/17 通过，全部通过；6/6 通过，全部通过	/Volumes/本地磁盘：D/DSH/dsh-team-space/docs/测试报告-2026-10-24-自动化与人工-artifacts-20261024-184830/09-member.log	/Users/mima0000/.codex/skills/dsh-team-space-testing/scripts/run-member-test.sh --host neo --name Neo --rounds 1 --install-check

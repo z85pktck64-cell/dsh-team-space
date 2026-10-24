@@ -1,0 +1,183 @@
+
+团队空间自检 · 端口 55796
+
+基础读接口
+  ✓ list 返回 tables
+  ✓ counts 存在
+  ✓ self-config 可读
+  ✓ gateway-status 有 enabled/host
+  ✓ member/list 返回数组
+  ✓ profile/suggest 有 bio
+条目读写（todos）
+  ✓ entry/upsert 创建成功
+  ✓ detail 能取回
+  ✓ counts 增加
+  ✓ entry/remove 生效
+F-Assign 状态流转
+  ✓ handoff/create 成功
+  ✓ claim 后状态为 doing
+  ✓ complete 后状态为 done
+  ✓ 结果已写入
+  ✓ 测试委托已清理
+F-Assign 状态机护栏
+  ✓ claim 不带接收人被拒
+  ✓ 非指定人接收被拒
+  ✓ 已完成不能再交回
+  ✓ 已完成不能再被接收
+  ✓ open → done 直跳被拒
+  ✓ handoffs 不走通用 upsert
+  ✓ 发起人可关单
+  ✓ 未给 deviceId 时回落到 host-* 设备号
+跨作者同名覆盖护栏
+  ✓ 换作者不带 baseVersion 被拒
+  ✓ 同一作者可正常更新
+  ✓ 不带 author 也拒（绑本机身份后仍非原作者）
+  ✓ 带 baseVersion 但没 takeOver 仍被拒
+  ✓ 显式 takeOver 可以接管
+安装链路护栏
+  ✓ 插件名含 ../ 被拒
+  ✓ npm spec 带 flag 被拒
+  ✓ 公网 http 包地址被拒
+  ✓ 10.evil.com 这类域名被拒
+  ✓ 192.168.evil.com 这类域名被拒
+  ✓ 私有网段地址过白名单（只是连不上）
+  ✓ tgz 地址优先于 npm 分支
+  ✓ 没有安装记录不能启用
+  ✓ 启用时非法插件名被拒
+  ✓ plugin/audit 返回对象
+认领三段式（跨设备：主服务器只给快照，会话建在成员本机）
+  ✓ claim 返回快照而不是会话
+  ✓ 远程认领不返回 sessionId
+  ✓ import-session 在本机建出会话
+  ✓ claim/commit 记下副本位置
+  ✓ 同设备再认领复用副本
+  ✓ 换设备不复用别人的副本
+  ✓ 报本机 hostId 也不会凭空给 sessionId
+  ✓ claim 缺 id 被拒
+  ✓ import-session 缺快照被拒
+  ✓ 认领按设备分别存（claims）
+回执两段式
+  ✓ receipt/submit 生成回执
+  ✓ 空回执被拒
+  ✓ 认领/回执测试数据已清理
+列表契约
+  ✓ list 返回 limits.maxItems
+  ✓ tables 只含真正的表
+  ✓ gateway-status 返回 deviceId
+并发写（store 锁）
+  ✓ 10 个并发写入都不报错
+  ✓ 并发写入的 10 条都落库
+成员心跳
+  ✓ join 接口可用
+  ✓ 自检心跳不污染设备列表
+  ✓ 自检心跳不计入在线设备
+客户端日志接口
+  ✓ client-log 接收成功
+工具渲染契约（源码级）
+  ✓ defineTool.render 声明为 (args, value)
+  ✓ defineTool.render 没有退回单参数写法
+列表排序契约（源码级）
+  ✓ 列表按 updatedAt 倒序渲染
+  ✓ 缺 updatedAt 时退回 createdAt
+文案与实现一致（源码级）
+  ✓ 没有文案还在让人点「发起委托」按钮
+  ✓ 引导页包含四节内容
+  ✓ 引导页是自包含文档（无外链脚本/样式）
+插件更新安全（源码级）
+  ✓ 插件版本比较是语义化的
+  ✓ 客户端禁用更新自己
+  ✓ 宿主端在替换目录前拒绝 link 安装
+委托可见性（真实接口）
+  ✓ 陌生设备看不到指定人的委托
+  ✓ 主服务器看得到指定人的委托
+  ✓ 非主服务器删除委托被拒
+  ✓ isSelf 不按插件名判断（成员端才暴露的坑）
+  ✓ 服务端返回 installedLink 字段
+  ✓ /list 带回宿主版本号（客户端据此判断是否落后）
+  ✓ /list 不返回 installedLink（它是纯本机概念，混进来会误导成员）
+  ✓ /local-state 返回 installedLink 布尔值（成员端判据）
+  ✓ MCP 工具与处理器一一对应（9 个工具）
+  ✓ stdio 传输层没有重复定义工具
+  ✓ 门户页引用的接口都有对应路由（3 个）
+  ✓ 门户页与客户端用同一条排序规则
+  ✓ installCommand 的 tgz 地址没被引号包住
+  ✓ installCopy 的调用都带 await（3 处）
+  ✓ HTTP MCP 能握手（POST /mcp）
+  ✓ HTTP MCP 列出 9 个工具
+  ✓ HTTP MCP 能真调用（list_skills 返回条目数）
+  ✓ install-plugin 有并发锁（INSTALL_LOCKS）
+  ✓ 临时目录名带随机后缀（不用裸 Date.now）
+  ✓ cp 前会检查源目录是否还在
+  ✓ plugin/enable 不按插件名拦 dsh-team-space
+  ✓ link 安装的保护挪到了替换目录前
+  ✓ enable 会登记 profile 的 bundles
+  ✓ install-plugin 与 enable 用同一套安装位置判断
+  ✓ loader 行用相对路径而非短名
+  ✓ J09 enable 会更新已有依赖并固化安装包
+  ✓ J09 同名依赖不会被旧的早退逻辑跳过
+  ✓ toast 只有一份 CSS 定义
+  ✓ toast 动画每帧都带 -50%（否则居中会丢）
+  ✓ loader 行 name 加了引号（YAML 保留字符）
+  ✓ repos 有 type 枚举校验
+  ✓ DSH 客户端按 type 分流
+  ✓ 门户页按 type 分流
+  ✓ MCP share_repo 接受 type
+  ✓ 门户页 tab 已改名「链接」
+  ✓ DSH 客户端 tab 已改名「链接」
+  ✓ 客户端有链接分组顺序
+  ✓ 门户页有链接分组顺序
+  ✓ /remove 支持 table 参数
+  ✓ 客户端横向子分类
+  ✓ 门户页横向子分类
+  ✓ 门户页是只读的（没有 + 入口）
+  ✓ 客户端「+」在子分类条末尾
+  ✓ MCP share_repo 支持写链接
+  ✓ 服务端按域名推断链接类型
+  ✓ 表单只剩名称与链接
+  ✓ 添加表单是弹窗
+  ✓ 保存后清去重缓存再拉
+  ✓ 客户端 inject inputTriggers
+  ✓ @ 来源 order -20（排在技能 -10 与文件 0 之前）
+  ✓ @ 来源内部按匹配度打分（精确 > 前缀 > 包含）
+  ✓ @ 来源注册有 try/catch 保护
+  ✓ @ 菜单含成员来源
+  ✓ 选中成员插入派委托模板（只留事项）
+  ✓ 委托创建会触发通知
+  ✓ 通知走企微群机器人且只认官方域名
+  ✓ 侧栏显示委托数（括号形式）
+  ✓ 数字在「团队空间」文字之后
+  ✓ README 保留三端同步约定
+  ✓ 测试通道写入的记录带 channel=test 标
+  ✓ 测试通道的数据不出现在真实列表
+  ✓ 测试通道能看到刚写的数据
+  ✓ 测试通道同时看得到真实数据（拿真实数据当背景）
+  ✓ 真实通道连详情都取不到测试记录
+  ✓ 测试通道删真实记录被拒（403 FORBIDDEN）
+  ✓ 被拒之后真实记录还在（没有删一半）
+  ✓ 服务端同时认 header 与 query 两种通道来源
+  ✓ 服务端给新记录自动打通道标（不靠每个路由自己记得）
+  ✓ 委托通知对测试记录直接不发（不骚扰真实群）
+  ✓ 委托写路由有跨通道守卫（测试通道改不动真实委托）
+  ✓ 客户端请求带 x-team-space-channel 头
+  ✓ 客户端有切通道入口与测试态标识
+  ✓ 门户页支持 ?channel=test 并显示测试横幅
+  ✓ MCP stdio 支持 TEAM_SPACE_CHANNEL=test
+  ✓ 宿主版本直接读 package.json（发版只改一处，不会漏）
+  ✓ 写入口挂版本闸门（mutateStore 是唯一写入口）
+  ✓ 客户端每次请求都上报 x-team-space-version
+  ✓ 客户端有强制升级弹窗（盖住界面、服务端已拒写）
+  ✓ 发版脚本会同步客户端版本常量
+  ✓ 门户页不参与版本闸门（不带 x-team-space-version）
+  ✓ 门户页每次都是最新（no-store 现读文件发出去）
+  ✓ 升级弹窗给的是「立即更新」，不是复制命令
+  ✓ 一键更新走本机两段式（install-plugin → plugin/enable）
+  ✓ /local-state 给出本机真实安装路径（否则会装成第二份）
+  ✓ /list 的插件条目带 downloadUrl（供一键更新直接用）
+  ✓ 客户端带的每个自定义 header 都被 CORS 预检放行
+  ✓ 两条建委托路径都会发企微通知（agent 工具曾经漏过）
+  ✓ join 记录本机 hostId（发起人不该退成「本机 host-8f1」）
+扫尾：清掉 0 条自检残留
+  ✓ 清完后没有 selftest 残留
+
+结果：159/159 通过，全部通过
+

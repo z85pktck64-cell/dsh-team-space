@@ -1,0 +1,133 @@
+
+mock 宿主已启动（DSH_HOME=/var/folders/qv/04f20syj2n7ft65ssy3hkny40000gn/T/ts-mock-home-Ujvk7b）
+
+跨设备认领（主服务器不代建会话）
+  ✓ gateway-status 暴露本机 host-* id
+  ✓ claim 返回 mode=remote
+  ✓ claim 不给 sessionId
+  ✓ 快照是文本（主服务器没有事件流）
+  ✓ 快照带了正文
+  ✓ import-session 返回 sessionId
+  ✓ 走 agents.create（有 announce）
+  ✓ 种子事件带上了正文
+  ✓ claim/commit 记下副本位置
+  ✓ 同设备再认领复用副本
+  ✓ 换设备不复用（副本在别人机器上）
+回执两段式
+  ✓ receipt/submit 生成回执
+  ✓ 空回执被拒
+  ✓ 副本不在本机时 /receipt 报 STATE_CONFLICT
+本机认领（源会话在这台机器上）
+  ✓ claim 返回 mode=local
+  ✓ 直接给了 sessionId
+  ✓ 源会话在本机但认领人不是本机 → remote
+  ✓ 远程认领拿到的是事件快照
+  ✓ 不带 host id 的老客户端按回环地址回落
+local-session 增量
+  ✓ A12 不带 since 返回全文
+  ✓ A13 带 since 只剩增量
+  ✓ E10 new-session 返回 sessionId
+  ✓ E10 新会话走 agents.create 并被记录
+护栏
+  ✓ claim 缺 id 被拒
+  ✓ import-session 缺快照被拒
+  ✓ 脏事件被清洗后仍导入
+  ✓ 超大单条被丢弃
+  ✓ 未知字段被剥离
+认领按设备分别存
+  ✓ claims 里 dev-a / dev-b 各有一份
+F-Assign 状态机收口
+  ✓ open → done 直跳被拒
+  ✓ handoffs 不走通用 upsert
+  ✓ 发起人可关单
+  ✓ 未给 deviceId 回落到 host-* 设备号
+  ✓ 非发起人不能关单
+作者护栏
+  ✓ 换作者不带 baseVersion 被拒
+  ✓ 不带 author 也被拒（绑本机身份后仍非原作者）
+  ✓ 带 baseVersion 没 takeOver 仍被拒
+  ✓ 显式 takeOver 可以接管
+  ✓ 作者名大小写/首尾空格不同视为同一人
+  ✓ 真的换人仍然被拦
+安装链路护栏
+  ✓ http://10.evil.com 被拒
+  ✓ http://192.168.evil.com 被拒
+  ✓ http://172.16.evil.com 被拒
+  ✓ http://evil.example.com 被拒
+  ✓ 插件名含 ../ 被拒
+  ✓ npm spec 带 flag 被拒
+  ✓ tgz 地址优先于 npm 分支
+  ✓ 没有安装记录不能启用
+  ✓ plugin/audit 有记录
+测试通道 / 功能通道隔离
+  ✓ 测试通道写入带 channel=test
+  ✓ 真实通道写入不带 channel 标
+  ✓ 测试记录不出现在真实列表
+  ✓ 真实记录在真实列表里
+  ✓ 测试通道同时看得到测试 + 真实记录
+  ✓ 通道也能用 ?channel=test 指定（门户页走这条）
+  ✓ 真实通道取测试记录详情被拒
+  ✓ 测试通道删真实记录被拒
+  ✓ 测试通道改真实记录被拒
+  ✓ 被拒之后真实记录没被改动
+  ✓ 测试通道建的委托不进真实列表
+  ✓ 测试通道看得到自己的委托
+  ✓ 会话分享自动落测试通道（路由作用域生效）
+  ✓ 测试通道分享的会话不进真实列表
+  ✓ 测试通道认领真实委托被拒（「测试里点认领」绝不能等于真的认领）
+  ✓ 真实委托仍是 open（没被测试动作改掉）
+多路径一致性：建委托 / 交回结果 / 通知副作用
+  ✓ 三条路径都建出了委托
+  ✓ 三条委托都出现在同一张表里
+  ✓ 三条委托字段一致（status / target）
+  ✓ 三条委托的 brief 一致（列表不返回 brief，要查 detail）
+  ✓ 三条建委托路径各发一次通知（agent 工具曾经漏过）
+  ✓ 通知请求真的打到了 webhook
+[team-space] 企微通知失败 500
+  ✓ webhook 返回 500 时记 failed，委托仍然创建成功
+  ✓ 三条路径都能把委托交回 done
+  ✓ 三条路径交回结果都写进了 result（列表不返回 result）
+  ✓ 取消委托仍可用（状态变 cancelled）
+安装链路端到端（真下载 / 真解压 / 真启用）
+  ✓ D08 link 安装点更新被拒（403）
+  ✓ D08 被拒后 link 目录仍是符号链接
+  ✓ D07 常规 copy 安装成功
+  ✓ D01 tgz 安装返回 checksum
+  ✓ D01 包真的落到 node_modules/p0-fixture
+  ✓ D03 安装后不自动写 profile 依赖
+  ✓ D03 安装后不自动写 loader 行
+  ✓ D04 确认启用成功且提示重启
+  ✓ D04 启用后写了 profile 依赖
+  ✓ D04 启用后写了 loader 行
+  ✓ D04 loader 行等于相对 node_modules 的路径
+  ✓ D04 loader 行的 name 加了引号（YAML 保留字符安全）
+  ✓ J09 profile 依赖按真实包名更新到本次安装包
+  ✓ J09 安装包已固化且与启用版本一致
+  ✓ J09 固化包不含 .bak 备份目录
+  ✓ J09 固化包不含 node_modules
+  ✓ J09 旧安装包清理到最近 3 个
+  ✓ J09 本次安装包没有被清理掉
+  ✓ J09 lockfile importer 指向新包
+  ✓ J09 lockfile package/snapshot 都有新版本与 integrity
+  ✓ J09 同版本重打包后 enable 仍成功
+  ✓ J09 同版本重打包会刷新 lockfile integrity
+  ✓ J09 pnpm --frozen-lockfile 重装后仍是 0.0.1
+  ✓ D05 checksum 不一致被拒
+  ✓ D06 没有安装记录不能启用
+  ✓ D12 并发安装只允许一个进入下载/替换流程
+  ✓ D12 被拒请求有明确「正在安装」提示
+  ✓ D13 坏包安装失败并返回非 2xx
+  ✓ D13 坏包失败后旧版本仍完好
+  ✓ E06 agent list_members 与 /member/list 成员集合一致（结构各自约定）
+  ✓ D09 技能安装真的落盘
+客户端版本闸门
+  ✓ list 返回宿主版本
+  ✓ 旧客户端写入被拒（UPGRADE_REQUIRED）
+  ✓ 被拒时带回了宿主版本（弹窗要显示）
+  ✓ 旧客户端读放行（读不会写坏数据）
+  ✓ 旧客户端心跳不被拦（否则像「连不上」）
+  ✓ 同版本客户端可写
+  ✓ 不带版本头的老客户端放行（服务端无法判断，只能放）
+
+结果：113/113 通过，全部通过
+

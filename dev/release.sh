@@ -73,6 +73,7 @@ rm -f "$TARBALL"
 tar -czf "$TARBALL" \
   --exclude node_modules --exclude .git --exclude '.bak-*' --exclude '*.bak-*' \
   --exclude 'docs/images' --exclude 'docs/*.png' \
+  --exclude 'docs/*artifacts*' --exclude 'docs/*-artifacts-*' \
   -C "$(dirname "$REPO")" "$(basename "$REPO")"
 ls -la "$TARBALL" | awk '{print "  " $5 " 字节  " $NF}'
 

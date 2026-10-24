@@ -30,6 +30,7 @@ let checks = 0
 let failures = 0
 const seeded = []
 const createdNames = []
+const createdHandoffs = []
 
 function ok(name, cond, detail = '') {
   checks += 1
@@ -80,6 +81,16 @@ async function cleanup() {
       if (item) await api('entry/remove', { method: 'POST', body: { table: 'repos', id: item.id } }).catch(() => null)
     }
   }
+  if (createdHandoffs.length) {
+    const gateway = await api('gateway-status', { channel: 'prod' }).catch(() => null)
+    for (const { id, channel } of createdHandoffs) {
+      await api('handoff/remove', {
+        method: 'POST',
+        channel,
+        body: { id, deviceId: gateway?.deviceId ?? '' },
+      }).catch(error => console.log(`  ! 委托清理失败 ${id}: ${error.message}`))
+    }
+  }
 }
 
 async function shot(page, name) {
@@ -112,6 +123,11 @@ async function clickTab(page, label) {
 
 async function cardNamed(page, name) {
   return page.locator('.ts-session').filter({ hasText: name }).first()
+}
+
+async function navCount(page) {
+  const text = await page.locator('.ts-nav-text').innerText()
+  return Number(text.match(/（(\d+)）/)?.[1] ?? 0)
 }
 
 async function main() {
@@ -188,6 +204,29 @@ async function main() {
       await page.close()
     }
 
+    // B20：新委托出现后，侧栏待认领数应在 10 秒内自动刷新，而不是等手动刷新。
+    {
+      const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
+      await gotoApp(page, { name: 'B20', channel: 'prod' })
+      await openTeam(page)
+      const before = await navCount(page)
+      const created = await api('handoff/create', {
+        method: 'POST',
+        body: { title: `${STAMP}-B20-refresh`, brief: 'B20 自动刷新', target: 'B20', owner: 'B20' },
+        channel: 'prod',
+      })
+      createdHandoffs.push({ id: created.id, channel: 'prod' })
+      const refreshed = await page.waitForFunction(expected => {
+        const text = document.querySelector('.ts-nav-text')?.innerText ?? ''
+        const value = Number(text.match(/（(\d+)）/)?.[1] ?? 0)
+        return value === expected
+      }, before + 1, { timeout: 12_000 }).then(() => true).catch(() => false)
+      ok('B20 侧栏待认领数在 10 秒内自动刷新', refreshed,
+        JSON.stringify({ before, after: await navCount(page), expected: before + 1 }))
+      await shot(page, 'ui-B20-nav-refresh.png')
+      await page.close()
+    }
+
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
     await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
     await gotoApp(page, { name: 'Xinzhan', channel: 'prod' })
@@ -251,6 +290,8 @@ async function main() {
         await createdCard.isVisible() && await page.evaluate(() => window.__h06Sentinel) === 'alive')
       const newDetail = (await api('list')).tables.repos.find(item => item.name === linkName)
       ok('H06 保存结果已真实落库（test 通道）', Boolean(newDetail), JSON.stringify(newDetail ?? {}))
+      ok('C11 只填名称 + 链接时自动补描述', Boolean(String(newDetail?.description ?? '').trim()),
+        JSON.stringify(newDetail ?? {}))
       const chipsAfter = await page.locator('.ts-subbar .ts-subchip').allTextContents()
       ok('H07 新增文档后仍保持「文档在最前、+ 在最后」',
         chipsAfter[0]?.includes('文档') && chipsAfter[chipsAfter.length - 1]?.trim() === '+',
@@ -273,6 +314,40 @@ async function main() {
       await portal.close()
     }
 
+    // G02 / G06：门户排序与深链直达。
+    {
+      const older = await seed('repos', {
+        name: `${STAMP}-sort-older`,
+        url: `https://example.feishu.cn/docx/${STAMP}-sort-older`,
+        description: 'G02 older',
+        type: 'doc',
+      })
+      await page.waitForTimeout(30)
+      const newer = await seed('repos', {
+        name: `${STAMP}-sort-newer`,
+        url: `https://example.feishu.cn/docx/${STAMP}-sort-newer`,
+        description: 'G02 newer',
+        type: 'doc',
+      })
+      const portal = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
+      const tabUrl = `${API}/portal?channel=test&tab=repos`
+      await portal.goto(tabUrl, { waitUntil: 'domcontentloaded' })
+      await portal.waitForTimeout(1200)
+      const titles = await portal.locator('.card-title').allTextContents()
+      const oldIndex = titles.indexOf(older.name)
+      const newIndex = titles.indexOf(newer.name)
+      ok('G02 门户按 updatedAt 降序（新记录在前）', newIndex >= 0 && oldIndex > newIndex,
+        JSON.stringify({ titles: titles.slice(0, 8), oldIndex, newIndex }))
+      ok('G06 ?tab=repos 直达链接页', (await portal.locator('.tab[aria-selected="true"]').innerText()).includes('链接'),
+        await portal.locator('.tab[aria-selected="true"]').innerText())
+      await portal.goto(`${API}/portal?channel=test#repos`, { waitUntil: 'domcontentloaded' })
+      await portal.waitForTimeout(1200)
+      ok('G06 #repos 直达链接页', (await portal.locator('.tab[aria-selected="true"]').innerText()).includes('链接'),
+        await portal.locator('.tab[aria-selected="true"]').innerText())
+      await shot(portal, 'ui-G02-G06-portal.png')
+      await portal.close()
+    }
+
     // H09 / H10：@ 菜单排序、成员/链接/技能齐全、选成员插入模板
     {
       const atPage = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
@@ -283,12 +358,30 @@ async function main() {
         await editor.click()
         await atPage.keyboard.press('Meta+A')
         await atPage.keyboard.press('Backspace')
+        await atPage.waitForFunction(() => document.activeElement?.innerText?.trim() === '', null, { timeout: 3000 })
       }
-      await clearEditor()
-      await editor.type('@', { delay: 120 })
       const listbox = atPage.locator('[role="listbox"]').first()
-      await listbox.waitFor({ state: 'visible', timeout: 6000 })
-      const broad = await listbox.innerText()
+      const readMenu = async (query, predicate, timeout = 8000) => {
+        let last = ''
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          await clearEditor()
+          await editor.type(query, { delay: 80 })
+          const deadline = Date.now() + timeout
+          while (Date.now() < deadline) {
+            if (await listbox.isVisible().catch(() => false)) {
+              last = await listbox.innerText().catch(() => '')
+              if (predicate(last)) return last
+            }
+            await atPage.waitForTimeout(250)
+          }
+          await atPage.keyboard.press('Escape')
+        }
+        return last
+      }
+      // 成员/链接是异步加载的；只等“菜单可见”会在慢机器上误判成缺组。
+      const broad = await readMenu('@', text =>
+        text.includes('团队空间 · 成员') && text.includes('Neo')
+        && text.includes('团队空间 · 链接') && text.includes('launcher2'))
       const hasMember = broad.includes('团队空间 · 成员') && broad.includes('Neo')
       const hasLink = broad.includes('团队空间 · 链接') && broad.includes('launcher2')
       await clearEditor()

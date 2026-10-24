@@ -2,7 +2,8 @@
 // 这样不用重启 DSH 也能验证宿主半的新逻辑。
 import { createServer } from 'node:http'
 import { execSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -209,9 +210,17 @@ ok('不带 host id 的老客户端按回环地址回落', claimNoHost.data.mode 
 // ---------- 场景 4：local-session 增量 ----------
 console.log('local-session 增量')
 const full = await call('local-session?sessionId=session-local-source')
-ok('不带 since 返回全文', (full.data.text ?? '').length > 0, JSON.stringify(full.data).slice(0, 120))
+ok('A12 不带 since 返回全文', (full.data.text ?? '').length > 0, JSON.stringify(full.data).slice(0, 120))
 const since = await call('local-session?sessionId=session-local-source&since=1500')
-ok('带 since 只剩增量', since.data.throughSeq === 1, JSON.stringify(since.data).slice(0, 200))
+ok('A13 带 since 只剩增量', since.data.throughSeq === 1, JSON.stringify(since.data).slice(0, 200))
+
+// ---------- E10：新会话 ----------
+const newSession = await call('new-session', { cwd: home })
+ok('E10 new-session 返回 sessionId', String(newSession.data?.sessionId ?? '').startsWith('session-'),
+  JSON.stringify(newSession.data).slice(0, 160))
+ok('E10 新会话走 agents.create 并被记录',
+  state.agentCreated.some(item => item.sessionId === newSession.data?.sessionId),
+  JSON.stringify(state.agentCreated.map(item => item.sessionId)))
 
 // ---------- 场景 5：护栏 ----------
 console.log('护栏')
@@ -524,6 +533,18 @@ writeFileSync(profilePkg, `${JSON.stringify({
 writeFileSync(lockFile, `lockfileVersion: '9.0'\n\nsettings:\n  autoInstallPeers: true\n  excludeLinksFromLockfile: false\n\nimporters:\n\n  .:\n    dependencies:\n      '@local/p0-fixture':\n        specifier: file:${oldArchive}\n        version: file:../../plugins/p0-fixture-0.0.0.tgz\n\npackages:\n\n  '@local/p0-fixture@file:../../plugins/p0-fixture-0.0.0.tgz':\n    resolution: {integrity: sha512-old, tarball: file:../../plugins/p0-fixture-0.0.0.tgz}\n    version: 0.0.0\n\nsnapshots:\n\n  '@local/p0-fixture@file:../../plugins/p0-fixture-0.0.0.tgz': {}\n`)
 const profileBeforeInstall = readFileSync(profilePkg, 'utf8')
 
+// D07 / D08：link 安装不能被「更新」覆盖；普通 copy 安装仍应成功。
+const selfSlot = join(profileDir, 'node_modules', '@local', 'dsh-team-space')
+mkdirSync(join(profileDir, 'node_modules', '@local'), { recursive: true })
+symlinkSync(fixtureRoot, selfSlot, 'dir')
+const linkBlocked = await callFail('install-plugin', { name: 'dsh-team-space', url: pkgUrl })
+ok('D08 link 安装点更新被拒（403）', linkBlocked.status === 403, JSON.stringify(linkBlocked))
+ok('D08 被拒后 link 目录仍是符号链接', lstatSync(selfSlot).isSymbolicLink())
+rmSync(selfSlot, { force: true })
+const selfCopy = await call('install-plugin', { name: 'dsh-team-space', url: pkgUrl })
+ok('D07 常规 copy 安装成功', selfCopy.data?.ok === true && existsSync(join(profileDir, 'node_modules', 'dsh-team-space', 'package.json')),
+  JSON.stringify(selfCopy.data).slice(0, 200))
+
 const installed = await call('install-plugin', { name: 'p0-fixture', url: pkgUrl })
 ok('D01 tgz 安装返回 checksum', /^[a-f0-9]{64}$/.test(String(installed.data?.checksum ?? '')),
   JSON.stringify(installed.data).slice(0, 200))
@@ -581,6 +602,21 @@ ok('J09 lockfile package/snapshot 都有新版本与 integrity',
   lockAfter.includes("'@local/p0-fixture@file:../../plugins/p0-fixture-0.0.1.tgz':")
   && /resolution: \{integrity: sha512-[A-Za-z0-9+/=]+, tarball: file:\.\.\/\.\.\/plugins\/p0-fixture-0\.0\.1\.tgz\}/.test(lockAfter))
 
+// 同版本重新打包：归档路径与版本不变，但内容/哈希变了。lockfile 里的
+// integrity 也必须同步，否则 pnpm --frozen-lockfile 会把合法更新判成篡改。
+const integrityBeforeRepack = lockAfter.match(/resolution: \{integrity: (sha512-[^,]+),/)?.[1] ?? ''
+writeFileSync(join(installedRoot, 'index.js'), 'export default { repacked: true }\n')
+const repacked = await call('plugin/enable', { name: 'p0-fixture', checksum: installed.data.checksum })
+const lockAfterRepack = readFileSync(lockFile, 'utf8')
+const archiveBytesAfterRepack = readFileSync(archive)
+const integrityAfterRepack = `sha512-${createHash('sha512').update(archiveBytesAfterRepack).digest('base64')}`
+ok('J09 同版本重打包后 enable 仍成功', repacked.data?.ok === true && repacked.data?.needsRestart === true,
+  JSON.stringify(repacked.data))
+ok('J09 同版本重打包会刷新 lockfile integrity',
+  Boolean(integrityBeforeRepack) && integrityBeforeRepack !== integrityAfterRepack
+  && lockAfterRepack.includes(`integrity: ${integrityAfterRepack}`),
+  JSON.stringify({ integrityBeforeRepack, integrityAfterRepack }))
+
 // 真正跑一次 pnpm：lock 与固化包必须自洽，不能把版本回退到 0.0.0
 execSync('pnpm install --offline --frozen-lockfile --ignore-scripts', { cwd: profileDir, stdio: 'pipe' })
 ok('J09 pnpm --frozen-lockfile 重装后仍是 0.0.1',
@@ -590,6 +626,46 @@ const badChecksum = await callFail('plugin/enable', { name: 'p0-fixture', checks
 ok('D05 checksum 不一致被拒', badChecksum.code === 'FORBIDDEN', JSON.stringify(badChecksum))
 const unknown = await callFail('plugin/enable', { name: 'p0-not-installed', checksum: 'x' })
 ok('D06 没有安装记录不能启用', unknown.code === 'NOT_FOUND', JSON.stringify(unknown))
+
+// D12：同一个插件同时点两次更新，只能有一个进入安装流程。
+const raceServer = createServer((req, res) => {
+  setTimeout(() => {
+    res.setHeader('content-type', 'application/octet-stream')
+    res.end(readFileSync(tarball))
+  }, 350)
+})
+await new Promise(resolve => raceServer.listen(0, '127.0.0.1', resolve))
+const raceUrl = `http://127.0.0.1:${raceServer.address().port}/p0-race.tgz`
+const race = await Promise.all([
+  call('install-plugin', { name: 'p0-race', url: raceUrl }),
+  call('install-plugin', { name: 'p0-race', url: raceUrl }),
+])
+const raceStatuses = race.map(item => item.status).sort()
+const raceRejected = race.find(item => item.status !== 200)
+ok('D12 并发安装只允许一个进入下载/替换流程',
+  raceStatuses.filter(status => status === 200).length === 1 && raceStatuses.filter(status => status === 400).length === 1,
+  JSON.stringify(race.map(item => ({ status: item.status, error: item.data?.error }))))
+ok('D12 被拒请求有明确「正在安装」提示',
+  String(raceRejected?.data?.error ?? '').includes('正在安装'),
+  JSON.stringify(raceRejected?.data ?? {}))
+
+// D13：拿坏包更新时，旧版本必须保持可用，不能被半成品覆盖。
+const badTarball = join(home, 'bad-package.tgz')
+writeFileSync(badTarball, 'this is not a tar archive\n')
+const badServer = createServer((req, res) => {
+  res.setHeader('content-type', 'application/octet-stream')
+  res.end(readFileSync(badTarball))
+})
+await new Promise(resolve => badServer.listen(0, '127.0.0.1', resolve))
+const badUrl = `http://127.0.0.1:${badServer.address().port}/bad.tgz`
+const badInstall = await call('install-plugin', { name: 'p0-fixture', url: badUrl })
+ok('D13 坏包安装失败并返回非 2xx', badInstall.status >= 400, JSON.stringify({ status: badInstall.status, error: badInstall.data?.error }))
+ok('D13 坏包失败后旧版本仍完好',
+  existsSync(installedAt) && JSON.parse(readFileSync(installedAt, 'utf8')).version === '0.0.1',
+  existsSync(installedAt) ? readFileSync(installedAt, 'utf8') : '(旧目录不存在)')
+
+raceServer.close()
+badServer.close()
 
 pkgServer.close()
 

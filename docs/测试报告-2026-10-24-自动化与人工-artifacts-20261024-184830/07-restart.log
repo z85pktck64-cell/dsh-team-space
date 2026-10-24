@@ -1,0 +1,16 @@
+
+J02 重启持久化 · restart-mvma1dpp
+
+   第一次启动：http://127.0.0.1:57191/?token=r1oLGwnum9e4zxcedLxMRErBiIX45T_262_r-dRmH8U
+  ✓ J02 重启前已写入技能、插件、委托（doing）
+  ✓ J02 第一个 DSH 进程已经退出
+   重启后：http://127.0.0.1:57216/?token=muCe-n-_tV8Gd-gIVU2tiMxdYn_1bfnun-syBlvkhZw
+  ✓ J02 重启后是新进程、新端口
+  ✓ J02 重启后各表条数一致，没有丢数据
+  ✓ J02 技能正文与描述完整保留
+  ✓ J02 插件条目完整保留
+  ✓ J02 委托状态 doing 与认领人保留
+  ✓ J02 本机安装记录（版本 / link 状态）没有丢
+
+结果：8/8 通过，全部通过
+

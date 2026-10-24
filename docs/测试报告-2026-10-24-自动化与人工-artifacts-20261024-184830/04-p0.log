@@ -1,0 +1,33 @@
+
+P0 冒烟 · http://127.0.0.1:55796/api/team-space
+
+  ✓ C05 /list 里没有技能正文
+  ✓ C05 /detail 返回技能正文
+  ✓ F02 真实列表看不到测试技能
+  ✓ F05 真实通道连详情也取不到测试记录
+  ✓ D11 拒绝非法文件名 ../../etc/passwd
+  ✓ D11 拒绝非法文件名 ..%2F..%2Fetc%2Fpasswd
+  ✓ D11 拒绝非法文件名 /etc/passwd
+  ✓ D11 拒绝非法文件名 a/b.tgz
+  ✓ E05 成员卡保存后可见
+  ✓ E07 MCP list_members 的 memberCards 与 /member/list 成员集合一致
+  ✓ E08 /lan-link 返回可访问地址
+  ✓ B16 consume 写 deliveredAt 且不改状态
+  ✓ D10 导出文件真的落盘且带正文
+  ✓ 门户新手引导返回 HTML
+  ✓ G05 门户页可打开
+  ✓ 门户页内置 test 通道横幅逻辑
+  ✓ 门户页是只读的（没有 entry/upsert 写入口）
+  ✓ G11 MCP 暴露 9 个工具
+  ✓ J06 真实通道 MCP 看不到测试技能
+  ✓ J06 测试通道 MCP 能看到测试技能
+  ✓ G03 MCP get_skill 返回正文
+  ✓ J06 真实通道 MCP 取不到测试技能
+  ✓ 测试通道无残留
+  ✓ /local-state 返回本机安装路径（一键更新靠它定位）
+  ✓ /list 的插件条目带 downloadUrl（一键更新直接用它）
+  ✓ CORS 预检放行 x-team-space-version（跨源成员必需）
+  ✓ CORS 预检放行 x-team-space-channel
+
+结果：27/27 通过，全部通过
+
