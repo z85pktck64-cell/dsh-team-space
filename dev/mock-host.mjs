@@ -624,6 +624,12 @@ const staleRead = await call('list', undefined, { 'x-team-space-version': '0.0.1
 ok('旧客户端读放行（读不会写坏数据）',
   staleRead.data.ok === true && staleRead.data.version?.host === hostVersion)
 
+// 心跳必须豁免：被拦的话旧版客户端每 5 秒报错、设备列表也看不见人，
+// 用户看到的是「连不上」，而真实原因只是「写需要升级」。
+const staleJoin = await call('join', { deviceId: 'mock-stale-device', name: '旧版心跳' },
+  { 'x-team-space-version': '0.0.1' })
+ok('旧客户端心跳不被拦（否则像「连不上」）', staleJoin.data.ok === true, JSON.stringify(staleJoin.data))
+
 const freshWrite = await call('entry/upsert', {
   table: 'repos', entry: { name: 'mock-fresh-write', url: 'https://example.com/fresh' },
 }, { ...TEST, 'x-team-space-version': hostVersion })
