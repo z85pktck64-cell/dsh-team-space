@@ -71,7 +71,8 @@ async function findBase(explicit) {
   for (const port of candidates) {
     try {
       const response = await fetch(`http://127.0.0.1:${port}${BASE_SUFFIX}/list`, { signal: AbortSignal.timeout(1500) })
-      if (response.ok) return { port, base: `http://127.0.0.1:${port}${BASE_SUFFIX}` }
+      const data = await response.json().catch(() => null)
+      if (response.ok && data?.tables) return { port, base: `http://127.0.0.1:${port}${BASE_SUFFIX}` }
     } catch {
       /* 下一个 */
     }
@@ -213,7 +214,7 @@ async function runCrossEnd(base) {
   // 12) 启用必须同时写 bundles，否则重启不加载（装到 @local 但 bundles 指旧路径）
   ok('enable 会登记 profile 的 bundles',
     /function registerProfileBundle/.test(indexSrc)
-    && /registerProfileBundle\(dirname\(base\)/.test(indexSrc))
+    && /registerProfileBundle\(profileDir/.test(indexSrc))
   ok('install-plugin 与 enable 用同一套安装位置判断',
     (indexSrc.match(/const localSlot = join\(base, '@local', short\)/g) ?? []).length >= 2,
     '两处 dest 计算不一致，装到 A 却在 B 找')
@@ -222,7 +223,14 @@ async function runCrossEnd(base) {
   //     装到 @local 却写短名，加载器按 name 找不到包就静默跳过（Neo 的插件消失就是这个）
   ok('loader 行用相对路径而非短名',
     /const name = entry \|\| shortName/.test(indexSrc)
-    && /enablePluginRow\(dirname\(base\), dest, short, bundleEntry\)/.test(indexSrc))
+    && /enablePluginRow\(profileDir, dest, short, bundleEntry\)/.test(indexSrc))
+  ok('J09 enable 会更新已有依赖并固化安装包',
+    /registerProfileDependency\(profileDir, packageName, audit\.version, `file:\$\{archive\.archive\}`\)/.test(indexSrc)
+    && /snapshotInstalledPackage\(dest, packageName, audit\.version\)/.test(indexSrc)
+    && /packageName = manifestName/.test(indexSrc)
+    && /syncProfileLockfile\(profileDir/.test(indexSrc))
+  ok('J09 同名依赖不会被旧的早退逻辑跳过',
+    !/if \(pkg\.dependencies\[name\]\) return true\n    pkg\.dependencies\[name\] = version/.test(indexSrc))
 
   // 14) toast 只能有一份定义，且动画每帧都要带 -50%：
   //     两份并存时后定义的 animation 会覆盖 translateX(-50%)，toast 左边缘贴中线，位置随文本长度变

@@ -1,0 +1,3227 @@
+diff --git a/README.md b/README.md
+index 17ce46c..0b66dc7 100644
+--- a/README.md
++++ b/README.md
+@@ -229,6 +229,9 @@ sh dev/release.sh 2.7.54 "改了什么"
+    **不写** profile 的 `package.json`，也**不写** `cordis.patch.yml`；
+ 2. 页面把来源、路径、SHA256 弹出来让用户确认；
+ 3. 用户确认后 `POST /plugin/enable { name, checksum }` 才登记依赖并写 loader 行；
++   同时按已安装 `package.json` 的真实包名把当前目录固化为
++   `~/.dsh/plugins/<短名>-<版本>.tgz`，并同步 profile 依赖与 `pnpm-lock.yaml`，
++   避免后续 `pnpm install` 按旧 tgz 把版本静默回退；
+ 4. 重启 DSH 后加载。
+ 
+ 所以「同事发个链接 → 你点一下 → 重启后它就在你机器上跑代码」这条链断在第 2 步。
+diff --git a/dev/mock-host.mjs b/dev/mock-host.mjs
+index 7aa4b77..4e1c2fc 100644
+--- a/dev/mock-host.mjs
++++ b/dev/mock-host.mjs
+@@ -1,7 +1,8 @@
+ // 用 mock 宿主加载插件，真起 HTTP 服务验证「认领三段式 / 回执两段式」
+ // 这样不用重启 DSH 也能验证宿主半的新逻辑。
+ import { createServer } from 'node:http'
+-import { mkdtempSync } from 'node:fs'
++import { execSync } from 'node:child_process'
++import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+ import { tmpdir } from 'node:os'
+ import { join } from 'node:path'
+ 
+@@ -11,6 +12,7 @@ process.env.DSH_HOME = home
+ const mod = await import(new URL('../lib/index.js', import.meta.url).href)
+ 
+ const routes = []
++const tools = new Map()
+ const state = {
+   // 本机是否「持有」源会话：false = 跨设备场景（主服务器没有别人的会话文件）
+   hasLocalSession: false,
+@@ -57,7 +59,12 @@ const ctx = {
+     },
+   },
+   agentDefaultModel: { currentSelection: () => ({ provider: 'mock', model: 'mock-1' }) },
+-  tools: { register: () => {} },
++  tools: {
++    register: definition => {
++      tools.set(definition.name, definition)
++      return () => tools.delete(definition.name)
++    },
++  },
+   connection: { authenticatedUrl: url => url, lanAddress: () => '127.0.0.1' },
+   effect: fn => { try { fn?.() } catch { /* mock */ } },
+   onDispose: () => {},
+@@ -97,6 +104,13 @@ async function call(path, body, headers) {
+   return { status: response.status, data }
+ }
+ 
++async function callFail(path, body, headers) {
++  const merged = { accept: 'application/json', 'content-type': 'application/json', ...(headers ?? {}) }
++  const response = await fetch(`${base}/${path}`, { method: 'POST', headers: merged, body: JSON.stringify(body ?? {}) })
++  const data = await response.json().catch(() => null)
++  return { status: response.status, code: data?.code ?? '', error: data?.error ?? '' }
++}
++
+ let checks = 0
+ let failed = 0
+ function ok(name, cond, detail = '') {
+@@ -374,6 +388,207 @@ ok('测试通道认领真实委托被拒（「测试里点认领」绝不能等
+ ok('真实委托仍是 open（没被测试动作改掉）',
+   ((await call('list')).data.tables?.handoffs ?? []).find(h => h.id === realHandoff.data.id)?.status === 'open')
+ 
++
++// ---------- 场景 5：多路径一致性（HTTP / agent 工具 / MCP） ----------
++console.log('多路径一致性：建委托 / 交回结果 / 通知副作用')
++
++const notifyLog = join(home, 'notify.jsonl')
++process.env.TEAM_SPACE_NOTIFY_LOG = notifyLog
++const hookBodies = []
++let hookStatus = 200
++const hook = createServer((req, res) => {
++  let body = ''
++  req.on('data', chunk => { body += chunk })
++  req.on('end', () => {
++    hookBodies.push(body)
++    res.statusCode = hookStatus
++    res.end('{"errcode":0}')
++  })
++})
++await new Promise(resolve => hook.listen(0, '127.0.0.1', resolve))
++process.env.TEAM_SPACE_NOTIFY_URL = `http://127.0.0.1:${hook.address().port}/hook`
++
++const notifyRows = () => {
++  try {
++    return readFileSync(notifyLog, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
++  } catch { return [] }
++}
++const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
++
++async function mcpCall(name, args, user = '甲') {
++  const response = await fetch(`${base}/mcp`, {
++    method: 'POST',
++    headers: { 'content-type': 'application/json' },
++    body: JSON.stringify({ jsonrpc: '2.0', id: 1, user, method: 'tools/call', params: { name, arguments: args } }),
++  })
++  const data = await response.json()
++  const text = data?.result?.content?.[0]?.text ?? '{}'
++  return { ...JSON.parse(text), isError: Boolean(data?.result?.isError) }
++}
++
++const payload = { title: '多路径一致性', brief: '同一份说明', target: '甲', owner: '乙' }
++const viaHttp = await call('handoff/create', payload)
++const viaAgent = await tools.get('team_space_create_handoff').execute(payload)
++const viaMcp = await mcpCall('team_space_create_handoff', payload)
++await sleep(250)
++
++const ids = { http: viaHttp.data.id, agent: viaAgent.id, mcp: viaMcp.id }
++ok('三条路径都建出了委托', Object.values(ids).every(Boolean), JSON.stringify(ids))
++const afterCreate = (await call('list')).data.tables?.handoffs ?? []
++ok('三条委托都出现在同一张表里',
++  Object.values(ids).every(id => afterCreate.some(h => h.id === id)))
++ok('三条委托字段一致（status / target）',
++  Object.values(ids).every(id => {
++    const h = afterCreate.find(item => item.id === id)
++    return h?.status === 'open' && h?.target === '甲'
++  }))
++const details = await Promise.all(Object.values(ids).map(id => call(`detail?table=handoffs&id=${id}`)))
++ok('三条委托的 brief 一致（列表不返回 brief，要查 detail）',
++  details.every(d => d.data?.entry?.brief === '同一份说明'),
++  JSON.stringify(details.map(d => d.data?.entry?.brief)))
++const sent = notifyRows().filter(row => row.status === 'sent')
++ok('三条建委托路径各发一次通知（agent 工具曾经漏过）',
++  Object.values(ids).every(id => sent.filter(r => r.handoffId === id).length === 1),
++  JSON.stringify(notifyRows()))
++ok('通知请求真的打到了 webhook', hookBodies.length === 3, `实际 ${hookBodies.length}`)
++
++hookStatus = 500
++const failNotify = await call('handoff/create', { title: '通知失败可观测', brief: 'x', owner: '乙' })
++await sleep(250)
++const failedRows = notifyRows().filter(row => row.status === 'failed' && row.handoffId === failNotify.data.id)
++ok('webhook 返回 500 时记 failed，委托仍然创建成功',
++  failedRows.length === 1 && failedRows[0].httpStatus === 500 && Boolean(failNotify.data.id),
++  JSON.stringify(notifyRows()))
++hookStatus = 200
++
++await call('handoff/claim', { id: ids.http, by: '甲' })
++await call('handoff/claim', { id: ids.agent, by: '甲' })
++await mcpCall('team_space_claim_handoff', { id: ids.mcp })
++const completeHttp = await call('handoff/complete', { id: ids.http, result: 'HTTP 做完', by: '甲' })
++const completeAgent = await tools.get('team_space_complete_handoff').execute({ id: ids.agent, result: 'agent 做完' })
++const completeMcp = await mcpCall('team_space_complete_handoff', { id: ids.mcp, result: 'MCP 做完' })
++const afterDone = (await call('list')).data.tables?.handoffs ?? []
++ok('三条路径都能把委托交回 done',
++  Object.values(ids).every(id => afterDone.find(h => h.id === id)?.status === 'done'),
++  JSON.stringify(afterDone.filter(h => Object.values(ids).includes(h.id)).map(h => [h.id, h.status])))
++const doneDetails = await Promise.all(Object.values(ids).map(id => call(`detail?table=handoffs&id=${id}`)))
++ok('三条路径交回结果都写进了 result（列表不返回 result）',
++  doneDetails[0].data?.entry?.result === 'HTTP 做完'
++  && doneDetails[1].data?.entry?.result === 'agent 做完'
++  && doneDetails[2].data?.entry?.result === 'MCP 做完',
++  JSON.stringify(doneDetails.map(d => d.data?.entry?.result)))
++
++const agentCancel = await tools.get('team_space_create_handoff').execute({ title: '待取消', brief: 'x', owner: '乙' })
++const cancelled = await call('handoff/cancel', { id: agentCancel.id, reason: '不做了', by: '乙' })
++const afterCancel = ((await call('list')).data.tables?.handoffs ?? []).find(h => h.id === agentCancel.id)
++ok('取消委托仍可用（状态变 cancelled）', cancelled.data?.ok === true && afterCancel?.status === 'cancelled',
++  JSON.stringify({ reply: cancelled.data, status: afterCancel?.status }))
++
++hook.close()
++
++
++// ---------- 场景 6：安装链路端到端（D01 / D03 / D04 / D05 / D06） ----------
++console.log('安装链路端到端（真下载 / 真解压 / 真启用）')
++
++const fixtureRoot = join(home, 'fixture-pkg')
++mkdirSync(fixtureRoot, { recursive: true })
++writeFileSync(join(fixtureRoot, 'package.json'), JSON.stringify({ name: '@local/p0-fixture', version: '0.0.1', main: 'index.js' }))
++writeFileSync(join(fixtureRoot, 'index.js'), 'export default {}\n')
++const tarball = join(home, 'p0-fixture.tgz')
++execSync(`tar -czf "${tarball}" -C "${fixtureRoot}" .`)
++
++const pkgServer = createServer((req, res) => {
++  res.setHeader('content-type', 'application/octet-stream')
++  res.end(readFileSync(tarball))
++})
++await new Promise(resolve => pkgServer.listen(0, '127.0.0.1', resolve))
++const pkgUrl = `http://127.0.0.1:${pkgServer.address().port}/p0-fixture.tgz`
++
++const profileDir = join(home, 'profiles', 'desktop')
++const installedRoot = join(profileDir, 'node_modules', '@local', 'p0-fixture')
++const installedAt = join(installedRoot, 'package.json')
++const profilePkg = join(profileDir, 'package.json')
++const patchFile = join(profileDir, 'cordis.patch.yml')
++const lockFile = join(profileDir, 'pnpm-lock.yaml')
++const oldArchive = join(home, 'plugins', 'p0-fixture-0.0.0.tgz')
++mkdirSync(profileDir, { recursive: true })
++mkdirSync(installedRoot, { recursive: true })
++writeFileSync(installedAt, JSON.stringify({ name: '@local/p0-fixture', version: '0.0.0', main: 'index.js' }))
++mkdirSync(join(home, 'plugins'), { recursive: true })
++execSync(`cp "${tarball}" "${oldArchive}"`)
++writeFileSync(profilePkg, `${JSON.stringify({
++  name: 'mock-profile',
++  private: true,
++  dependencies: { '@local/p0-fixture': `file:${oldArchive}` },
++}, null, 2)}\n`)
++writeFileSync(lockFile, `lockfileVersion: '9.0'\n\nsettings:\n  autoInstallPeers: true\n  excludeLinksFromLockfile: false\n\nimporters:\n\n  .:\n    dependencies:\n      '@local/p0-fixture':\n        specifier: file:${oldArchive}\n        version: file:../../plugins/p0-fixture-0.0.0.tgz\n\npackages:\n\n  '@local/p0-fixture@file:../../plugins/p0-fixture-0.0.0.tgz':\n    resolution: {integrity: sha512-old, tarball: file:../../plugins/p0-fixture-0.0.0.tgz}\n    version: 0.0.0\n\nsnapshots:\n\n  '@local/p0-fixture@file:../../plugins/p0-fixture-0.0.0.tgz': {}\n`)
++const profileBeforeInstall = readFileSync(profilePkg, 'utf8')
++
++const installed = await call('install-plugin', { name: 'p0-fixture', url: pkgUrl })
++ok('D01 tgz 安装返回 checksum', /^[a-f0-9]{64}$/.test(String(installed.data?.checksum ?? '')),
++  JSON.stringify(installed.data).slice(0, 200))
++ok('D01 包真的落到 node_modules/p0-fixture', existsSync(installedAt))
++ok('D03 安装后不自动写 profile 依赖',
++  readFileSync(profilePkg, 'utf8') === profileBeforeInstall)
++ok('D03 安装后不自动写 loader 行',
++  !existsSync(patchFile) || !readFileSync(patchFile, 'utf8').includes('p0-fixture'))
++
++const enabled = await call('plugin/enable', { name: 'p0-fixture', checksum: installed.data.checksum })
++ok('D04 确认启用成功且提示重启', enabled.data?.ok === true && enabled.data?.needsRestart === true)
++ok('D04 启用后写了 profile 依赖',
++  existsSync(profilePkg) && readFileSync(profilePkg, 'utf8').includes('p0-fixture'))
++ok('D04 启用后写了 loader 行',
++  existsSync(patchFile) && readFileSync(patchFile, 'utf8').includes('p0-fixture'))
++const patchText = existsSync(patchFile) ? readFileSync(patchFile, 'utf8') : ''
++ok('D04 loader 行等于相对 node_modules 的路径', patchText.includes('name: "@local/p0-fixture"'), patchText.slice(0, 200))
++ok('D04 loader 行的 name 加了引号（YAML 保留字符安全）', patchText.includes('name: "@local/p0-fixture"'), patchText.slice(0, 200))
++
++// J09：升级后 profile 依赖必须指向本次安装的包，而不是保留旧 tgz。
++// 请求名用短名、真实包名带 @local，复刻 Neo 门店端的实际安装方式。
++const profileAfter = JSON.parse(readFileSync(profilePkg, 'utf8'))
++const dependency = profileAfter.dependencies?.['@local/p0-fixture'] ?? ''
++const archive = dependency.startsWith('file:') ? dependency.slice(5) : ''
++ok('J09 profile 依赖按真实包名更新到本次安装包',
++  archive.endsWith('/plugins/p0-fixture-0.0.1.tgz') && existsSync(archive), dependency)
++ok('J09 安装包已固化且与启用版本一致',
++  existsSync(archive)
++  && JSON.parse(execSync(`tar -xOf "${archive}" ./package.json`, { encoding: 'utf8' })).version === '0.0.1')
++const lockAfter = readFileSync(lockFile, 'utf8')
++ok('J09 lockfile importer 指向新包',
++  lockAfter.includes(`specifier: file:${archive}`)
++  && lockAfter.includes('version: file:../../plugins/p0-fixture-0.0.1.tgz')
++  && !lockAfter.includes('p0-fixture-0.0.0.tgz'), lockAfter.slice(0, 600))
++ok('J09 lockfile package/snapshot 都有新版本与 integrity',
++  lockAfter.includes("'@local/p0-fixture@file:../../plugins/p0-fixture-0.0.1.tgz':")
++  && /resolution: \{integrity: sha512-[A-Za-z0-9+/=]+, tarball: file:\.\.\/\.\.\/plugins\/p0-fixture-0\.0\.1\.tgz\}/.test(lockAfter))
++
++// 真正跑一次 pnpm：lock 与固化包必须自洽，不能把版本回退到 0.0.0
++execSync('pnpm install --offline --frozen-lockfile --ignore-scripts', { cwd: profileDir, stdio: 'pipe' })
++ok('J09 pnpm --frozen-lockfile 重装后仍是 0.0.1',
++  JSON.parse(readFileSync(installedAt, 'utf8')).version === '0.0.1')
++
++const badChecksum = await callFail('plugin/enable', { name: 'p0-fixture', checksum: 'deadbeef' })
++ok('D05 checksum 不一致被拒', badChecksum.code === 'FORBIDDEN', JSON.stringify(badChecksum))
++const unknown = await callFail('plugin/enable', { name: 'p0-not-installed', checksum: 'x' })
++ok('D06 没有安装记录不能启用', unknown.code === 'NOT_FOUND', JSON.stringify(unknown))
++
++pkgServer.close()
++
++// E06 / D09：agent 工具成员列表、技能安装
++await call('member/save', { name: 'p0-agent-member', bio: '## 能接什么活\n- mock' })
++const agentMembers = await tools.get('team_space_list_members').execute({})
++const httpMembers = await call('member/list')
++const agentNames = (agentMembers.members ?? []).map(item => String(item).split('：')[0])
++const httpNames = (httpMembers.data.members ?? []).map(item => item.name)
++ok('E06 agent list_members 与 /member/list 成员集合一致（结构各自约定）',
++  JSON.stringify(agentNames.sort()) === JSON.stringify(httpNames.sort()),
++  JSON.stringify({ agent: agentNames, http: httpNames }))
++
++const skillInstalled = await call('install-skill', { name: 'p0-installed-skill', content: 'P0 SKILL 正文' })
++const skillFile = join(home, 'skills', 'p0-installed-skill', 'SKILL.md')
++ok('D09 技能安装真的落盘', existsSync(skillFile) && readFileSync(skillFile, 'utf8') === 'P0 SKILL 正文',
++  String(skillFile))
++
+ server.close()
+ console.log(`\n结果：${checks - failed}/${checks} 通过${failed ? `，${failed} 条失败` : '，全部通过'}\n`)
+ process.exit(failed ? 1 : 0)
+diff --git a/dev/release.sh b/dev/release.sh
+index 318e5c0..91b2b6f 100755
+--- a/dev/release.sh
++++ b/dev/release.sh
+@@ -44,8 +44,25 @@ echo "== 2/5 离线自检 =="
+ # 两个都要跑，各自证明不同的事：
+ #   mock-host —— 用临时 DSH_HOME 真跑**这份源码**，不重启 DSH 就能验宿主半的新逻辑
+ #   selftest  —— 打本机**运行中**的宿主，证明线上那份没坏（刚改完还没重启时它会落后一个版本）
+-node dev/mock-host.mjs 2>&1 | tail -2
+-node dev/selftest.mjs 2>&1 | tail -2
++#   e2e-p0    —— selftest 没覆盖的路由（detail/download/member/portal/MCP/consume）
++#   check-store —— 旧数据迁移 + store 损坏不静默清空
++# 注意：不能写成 `node xxx | tail -2` —— tail 的退出码永远是 0，
++# 测试挂了发布也会继续。这里统一走 run_check，失败直接中止。
++CHECK_LOG="${TMPDIR:-/tmp}/team-space-release-check.log"
++run_check() {
++  label=$1
++  shift
++  if ! "$@" > "$CHECK_LOG" 2>&1; then
++    echo "  ✗ $label 失败"
++    tail -30 "$CHECK_LOG"
++    exit 1
++  fi
++  tail -2 "$CHECK_LOG"
++}
++run_check mock-host node dev/mock-host.mjs
++run_check check-store node dev/check-store.mjs
++run_check selftest node dev/selftest.mjs
++run_check e2e-p0 node dev/e2e-p0.mjs
+ 
+ echo "== 3/5 打包 =="
+ rm -f "$TARBALL"
+diff --git a/dev/selftest.mjs b/dev/selftest.mjs
+index abbe768..4992438 100644
+--- a/dev/selftest.mjs
++++ b/dev/selftest.mjs
+@@ -71,7 +71,8 @@ async function findBase(explicit) {
+   for (const port of candidates) {
+     try {
+       const response = await fetch(`http://127.0.0.1:${port}${BASE_SUFFIX}/list`, { signal: AbortSignal.timeout(1500) })
+-      if (response.ok) return { port, base: `http://127.0.0.1:${port}${BASE_SUFFIX}` }
++      const data = await response.json().catch(() => null)
++      if (response.ok && data?.tables) return { port, base: `http://127.0.0.1:${port}${BASE_SUFFIX}` }
+     } catch {
+       /* 下一个 */
+     }
+@@ -213,7 +214,7 @@ async function runCrossEnd(base) {
+   // 12) 启用必须同时写 bundles，否则重启不加载（装到 @local 但 bundles 指旧路径）
+   ok('enable 会登记 profile 的 bundles',
+     /function registerProfileBundle/.test(indexSrc)
+-    && /registerProfileBundle\(dirname\(base\)/.test(indexSrc))
++    && /registerProfileBundle\(profileDir/.test(indexSrc))
+   ok('install-plugin 与 enable 用同一套安装位置判断',
+     (indexSrc.match(/const localSlot = join\(base, '@local', short\)/g) ?? []).length >= 2,
+     '两处 dest 计算不一致，装到 A 却在 B 找')
+@@ -222,7 +223,14 @@ async function runCrossEnd(base) {
+   //     装到 @local 却写短名，加载器按 name 找不到包就静默跳过（Neo 的插件消失就是这个）
+   ok('loader 行用相对路径而非短名',
+     /const name = entry \|\| shortName/.test(indexSrc)
+-    && /enablePluginRow\(dirname\(base\), dest, short, bundleEntry\)/.test(indexSrc))
++    && /enablePluginRow\(profileDir, dest, short, bundleEntry\)/.test(indexSrc))
++  ok('J09 enable 会更新已有依赖并固化安装包',
++    /registerProfileDependency\(profileDir, packageName, audit\.version, `file:\$\{archive\.archive\}`\)/.test(indexSrc)
++    && /snapshotInstalledPackage\(dest, packageName, audit\.version\)/.test(indexSrc)
++    && /packageName = manifestName/.test(indexSrc)
++    && /syncProfileLockfile\(profileDir/.test(indexSrc))
++  ok('J09 同名依赖不会被旧的早退逻辑跳过',
++    !/if \(pkg\.dependencies\[name\]\) return true\n    pkg\.dependencies\[name\] = version/.test(indexSrc))
+ 
+   // 14) toast 只能有一份定义，且动画每帧都要带 -50%：
+   //     两份并存时后定义的 animation 会覆盖 translateX(-50%)，toast 左边缘贴中线，位置随文本长度变
+diff --git a/lib/client.js b/lib/client.js
+index e2adcb6..61a7c8f 100644
+--- a/lib/client.js
++++ b/lib/client.js
+@@ -1350,14 +1350,26 @@ h1.ts-brand{
+       return error
+     }
+ 
++    /** fetch 抛错时给用户一句能照着做的提示，不要把浏览器的 Failed to fetch 原样抛到界面上。 */
++    async function fetchWithMessage(url, init, message) {
++      try {
++        return await fetch(url, init)
++      } catch (cause) {
++        const error = new Error(message)
++        error.code = 'NETWORK_UNREACHABLE'
++        error.cause = cause
++        throw error
++      }
++    }
++
+     async function callLocal(path, body) {
+-      const response = await fetch(`${API}/${path}`, body === undefined
++      const response = await fetchWithMessage(`${API}/${path}`, body === undefined
+         ? { headers: { accept: 'application/json' } }
+         : {
+             method: 'POST',
+             headers: { 'content-type': 'application/json' },
+             body: JSON.stringify(body),
+-          })
++          }, '连不上本机 DSH 服务，请确认 DSH 仍在运行后重试')
+       const payload = await response.json().catch(() => null)
+       if (!response.ok || payload?.ok === false) {
+         throw apiError(payload, `本机状态请求失败（HTTP ${response.status}）`)
+@@ -1375,9 +1387,10 @@ h1.ts-brand{
+       const headers = { accept: 'application/json' }
+       if (body !== undefined) headers['content-type'] = 'application/json'
+       if (readChannel() === 'test') headers['x-team-space-channel'] = 'test'
+-      const response = await fetch(url, body === undefined
++      const response = await fetchWithMessage(url, body === undefined
+         ? { headers }
+-        : { method: 'POST', headers, body: JSON.stringify(body) })
++        : { method: 'POST', headers, body: JSON.stringify(body) },
++        '连不上团队空间服务器，请检查网络或服务器地址后重试')
+       const payload = await response.json().catch(() => null)
+       if (!response.ok || payload?.ok === false) {
+         throw apiError(payload, `请求失败（HTTP ${response.status}）`)
+@@ -1673,7 +1686,7 @@ h1.ts-brand{
+                 }))),
+         h('div', { className: 'ts-actions' },
+           h('button', { className: 'ts-btn', 'data-primary': 'true', disabled: busy, onClick: () => onSave() },
+-            busy ? '保存中…' : editing ? '保存更新' : '保存'),
++            busy ? '保存中…' : editing?.id ? '保存更新' : '保存'),
+           editing ? h('button', { className: 'ts-btn', onClick: onCancel }, '取消') : null))
+     }
+ 
+@@ -2444,6 +2457,9 @@ h1.ts-brand{
+               baseVersion: editing?.contentHash ?? editing?.version ?? '',
+               crossAuthor: /已经由|接管/.test(failure.message),
+             })
++            // 冲突条渲染在编辑弹窗下面；弹窗不关，遮罩会盖住「接管」按钮。
++            // 草稿已存进 conflict.draft，关掉表单不丢输入，点接管仍然保存这份草稿。
++            setEditing(null)
+           } else {
+             setError(failure.message)
+           }
+diff --git a/lib/index.js b/lib/index.js
+index 447ef14..12f1ae4 100644
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -52,15 +52,23 @@ export const inject = ['webServer', 'sessionQuery', 'sessionPersistence', 'tools
+ 
+ const ROUTE = '/api/team-space'
+ 
+-/** 把插件登记进 profile 的 package.json dependencies —— loader 靠它解析插件包。 */
+-function registerProfileDependency(profileDir, name, version) {
++/**
++ * 把插件登记进 profile 的 package.json dependencies —— loader 靠它解析插件包。
++ *
++ * `spec` 为空时只补缺失项（link 安装保持原样）；传了 spec 则必须覆盖旧值。
++ * 以前发现同名依赖就直接 return，导致升级只换了 node_modules，profile 仍指向旧 tgz，
++ * 下一次 pnpm install 会把刚升级的插件静默回退。
++ */
++function registerProfileDependency(profileDir, name, version, spec = '') {
+   try {
+     const file = join(profileDir, 'package.json')
+     if (!existsSync(file)) return false
+     const pkg = JSON.parse(readFileSync(file, 'utf8'))
+     pkg.dependencies = pkg.dependencies ?? {}
+-    if (pkg.dependencies[name]) return true
+-    pkg.dependencies[name] = version ? `^${version}` : '*'
++    const next = spec || (version ? `^${version}` : '*')
++    if (pkg.dependencies[name] && !spec) return true
++    if (pkg.dependencies[name] === next) return true
++    pkg.dependencies[name] = next
+     renameSync(file, `${file}.bak-${Date.now()}`)
+     pruneBackups(file)
+     writeFileSync(file, `${JSON.stringify(pkg, null, 2)}\n`)
+@@ -70,6 +78,88 @@ function registerProfileDependency(profileDir, name, version) {
+   }
+ }
+ 
++/**
++ * 给已安装目录做一份可重装的本地 tgz。
++ *
++ * 只改 profile 的 version 字段不够：成员机上的依赖是 `file:...tgz`，
++ * 必须让依赖指向一个真实存在、内容与当前 node_modules 一致的新包。
++ */
++async function snapshotInstalledPackage(dest, name, version) {
++  const home = process.env.DSH_HOME ?? join(homedir(), '.dsh')
++  const pluginsDir = join(home, 'plugins')
++  mkdirSync(pluginsDir, { recursive: true })
++  const short = name.includes('/') ? name.split('/').pop() : name
++  const safeVersion = String(version || 'installed').replace(/[^\w.\-]/g, '-')
++  const archive = join(pluginsDir, `${short}-${safeVersion}.tgz`)
++  const staging = `${archive}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`
++  try {
++    await execFileAsync('tar', ['-czf', staging, '-C', dest, '.'])
++    const bytes = readFileSync(staging)
++    renameSync(staging, archive)
++    return {
++      archive,
++      integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}`,
++      checksum: createHash('sha256').update(bytes).digest('hex'),
++      size: bytes.length,
++    }
++  } catch (error) {
++    try { rmSync(staging, { force: true }) } catch { /* 清理失败不影响报错 */ }
++    throw new Error(`插件已安装，但固化安装包失败：${error?.message ?? error}`)
++  }
++}
++
++/** 更新 pnpm-lock v9 中这条本地 file: 依赖，避免下次 install 读取旧的 specifier。 */
++function syncProfileLockfile(profileDir, name, spec, version, integrity) {
++  try {
++    const file = join(profileDir, 'pnpm-lock.yaml')
++    if (!existsSync(file) || !spec.startsWith('file:') || !version) return false
++    let text = readFileSync(file, 'utf8')
++    if (!/^lockfileVersion: '9\./m.test(text)) return false
++    const absTarball = spec.slice('file:'.length)
++    const relSpec = `file:${relative(profileDir, absTarball).split(sep).join('/')}`
++    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
++    const importer = new RegExp(
++      `(^      '${escaped}':\\n        specifier: )[^\\n]*(\\n        version: )[^\\n]*`,
++      'm',
++    )
++    const match = text.match(importer)
++    if (!match) return false
++    const oldRelSpec = match[0].split('\n').find(line => line.includes('version: '))?.trim().slice('version: '.length) ?? ''
++    text = text.replace(importer, (_, head, tail) => `${head}${spec}${tail}${relSpec}`)
++
++    const key = `${name}@${relSpec}`
++    const removeBlock = target => {
++      let start = text.indexOf(`  '${target}':`)
++      while (start >= 0) {
++        const lineEnd = text.indexOf('\n', start)
++        const end = lineEnd < 0 ? -1 : text.indexOf('\n\n', lineEnd)
++        text = end < 0 ? text.slice(0, start) : `${text.slice(0, start)}${text.slice(end + 2)}`
++        start = text.indexOf(`  '${target}':`)
++      }
++    }
++    if (oldRelSpec && oldRelSpec !== relSpec) removeBlock(`${name}@${oldRelSpec}`)
++    const addUnder = (section, block) => {
++      const marker = `\n${section}:\n\n`
++      const at = text.indexOf(marker)
++      if (at < 0) return
++      const sectionStart = at + marker.length
++      const sectionEnd = text.indexOf('\n\n', sectionStart)
++      const sectionText = text.slice(sectionStart, sectionEnd < 0 ? undefined : sectionEnd)
++      if (sectionText.includes(`  '${key}'`)) return
++      text = `${text.slice(0, sectionStart)}${block}\n\n${text.slice(sectionStart)}`
++    }
++    addUnder('packages', `  '${key}':\n    resolution: {integrity: ${integrity}, tarball: ${relSpec}}\n    version: ${version}`)
++    addUnder('snapshots', `  '${key}': {}`)
++
++    renameSync(file, `${file}.bak-${Date.now()}`)
++    pruneBackups(file)
++    writeFileSync(file, text)
++    return true
++  } catch {
++    return false
++  }
++}
++
+ /** 把插件的 loader 行写进 profile 的 cordis.patch.yml（写前备份，已存在则跳过）。 */
+ function enablePluginRow(profileDir, pluginDir, shortName, entry) {
+   try {
+@@ -367,11 +457,23 @@ async function safeExtractTgz(tmpFile, extractDir) {
+  * 不进 git、不在接口里回显全文。
+  */
+ async function notifyHandoff(handoff) {
++  const attempt = record => logNotifyAttempt({
++    handoffId: handoff?.id,
++    title: handoff?.title,
++    target: handoff?.target,
++    ...record,
++  })
+   // 测试通道的通知会发到真实的企业微信群 —— 一次实测就骚扰整个群，直接不发。
+-  if (entryChannel(handoff) === CHANNEL_TEST) return
++  if (entryChannel(handoff) === CHANNEL_TEST) return attempt({ status: 'skipped', reason: 'test-channel' })
+   try {
+-    const url = String(loadStore()?.notify?.wecomWebhook ?? '').trim()
+-    if (!/^https:\/\/qyapi\.weixin\.qq\.com\//.test(url)) return
++    const configured = String(loadStore()?.notify?.wecomWebhook ?? '').trim()
++    // 测试/运维用：显式覆盖目标地址，只在设了环境变量时生效。
++    const override = String(process.env.TEAM_SPACE_NOTIFY_URL ?? '').trim()
++    const url = override || configured
++    if (!url) return attempt({ status: 'skipped', reason: 'no-webhook' })
++    if (!override && !/^https:\/\/qyapi\.weixin\.qq\.com\//.test(url)) {
++      return attempt({ status: 'skipped', reason: 'not-wecom' })
++    }
+     const target = handoff.target ? `@${handoff.target}` : '任何人'
+     const content = [
+       '**📋 新的团队空间委托**',
+@@ -385,21 +487,39 @@ async function notifyHandoff(handoff) {
+     const controller = new AbortController()
+     const timer = setTimeout(() => controller.abort(), 8000)
+     try {
+-      await fetch(url, {
++      const response = await fetch(url, {
+         method: 'POST',
+         headers: { 'content-type': 'application/json' },
+         body: JSON.stringify({ msgtype: 'markdown', markdown: { content } }),
+         signal: controller.signal,
+       })
++      // 以前不看响应码：企微返回 500 也会被当成发送成功。
++      if (!response.ok) {
++        attempt({ status: 'failed', httpStatus: response.status })
++        console.error('[team-space] 企微通知失败', response.status)
++      } else {
++        attempt({ status: 'sent', httpStatus: response.status })
++      }
+     } finally {
+       clearTimeout(timer)
+     }
+   } catch (error) {
+     // 通知失败不能影响委托本身
++    attempt({ status: 'error', error: String(error?.message ?? error) })
+     console.error('[team-space] 企微通知失败', error?.message ?? error)
+   }
+ }
+ 
++/** 通知可观测性：设置 TEAM_SPACE_NOTIFY_LOG 后，每次尝试（含跳过）追加一行 JSONL。 */
++function logNotifyAttempt(record) {
++  const file = process.env.TEAM_SPACE_NOTIFY_LOG
++  if (!file) return
++  try {
++    mkdirSync(dirname(file), { recursive: true })
++    appendFileSync(file, `${JSON.stringify({ at: new Date().toISOString(), ...record })}\n`)
++  } catch { /* 日志失败不影响通知 */ }
++}
++
+ /** 安装审计：记下来源与 sha256，启用时要求回传同一个指纹。 */
+ function installAuditPath() {
+   const home = process.env.DSH_HOME ?? join(homedir(), '.dsh')
+@@ -472,7 +592,7 @@ function registerProfileBundle(profileDir, entry) {
+   }
+ }
+ 
+-function enableInstalled(name, checksum) {
++async function enableInstalled(name, checksum) {
+   const audit = readInstallAudit()[name]
+   if (!audit) fail(E.NOT_FOUND, '没有这条安装记录，请重新安装')
+   if (checksum && audit.checksum && audit.checksum !== checksum) {
+@@ -487,12 +607,34 @@ function enableInstalled(name, checksum) {
+   if (!isInside(base, dest) || !existsSync(join(dest, 'package.json'))) {
+     fail(E.NOT_FOUND, '插件目录不存在，请重新安装')
+   }
+-  registerProfileDependency(dirname(base), name, audit.version)
++  const profileDir = dirname(base)
++  // 安装请求名不一定是真实包名：成员常按「dsh-team-space」更新，实际包名是
++  // 「@local/dsh-team-space」。依赖写错 key 会留下旧 @local 依赖，pnpm 一装就回退。
++  let packageName = name
++  try {
++    const manifestName = JSON.parse(readFileSync(join(dest, 'package.json'), 'utf8')).name
++    if (typeof manifestName === 'string' && /^[@a-zA-Z0-9][\w@/.\-]*$/.test(manifestName)) packageName = manifestName
++  } catch { /* 读不到就退回请求名 */ }
++  let archive = null
++  // link 安装是开发态，不能固化成 tgz 后把 dev link 改成静态副本；只补缺失依赖。
++  if (!lstatSync(dest).isSymbolicLink()) {
++    archive = await snapshotInstalledPackage(dest, packageName, audit.version)
++    registerProfileDependency(profileDir, packageName, audit.version, `file:${archive.archive}`)
++    syncProfileLockfile(profileDir, packageName, `file:${archive.archive}`, audit.version, archive.integrity)
++  } else {
++    registerProfileDependency(profileDir, packageName, audit.version)
++  }
+   // 相对 node_modules 的路径，例：@local/dsh-team-space 或 dsh-team-space
+   const bundleEntry = relative(base, dest).split(sep).join('/')
+-  registerProfileBundle(dirname(base), bundleEntry)
+-  const enabled = enablePluginRow(dirname(base), dest, short, bundleEntry)
+-  writeInstallAudit(name, { ...audit, enabled: true, enabledAt: Date.now() })
++  registerProfileBundle(profileDir, bundleEntry)
++  const enabled = enablePluginRow(profileDir, dest, short, bundleEntry)
++  writeInstallAudit(name, {
++    ...audit,
++    enabled: true,
++    enabledAt: Date.now(),
++    packageName,
++    ...(archive ? { archive: archive.archive, archiveIntegrity: archive.integrity } : {}),
++  })
+   return enabled
+ }
+ 
+@@ -587,9 +729,28 @@ function storePath() {
+  * 注意区分两件事：**落盘永远写全量**，只有「给谁看」才按通道裁。
+  * 写路径（mutateStore）必须显式要全量，否则会把别的通道的记录整批写没了。
+  */
++function emptyStore() {
++  return { tasks: [], joins: [], todos: [], plugins: [], skills: [], repos: [], handoffs: [], hostDeviceId: '', notify: {} }
++}
++
+ function loadStore(channel = currentChannel()) {
++  let text = ''
+   try {
+-    const raw = JSON.parse(readFileSync(storePath(), 'utf8'))
++    text = readFileSync(storePath(), 'utf8')
++  } catch (error) {
++    // 首次运行还没有 store 是正常的
++    if (error?.code === 'ENOENT') return emptyStore()
++    throw error
++  }
++  let raw
++  try {
++    raw = JSON.parse(text)
++  } catch (error) {
++    // 以前这里直接返回空 store，下一次写就会用空数据把真实团队空间整个覆盖。
++    // 现在宁可报错停写，也不静默清空：原文件保持不动，留给人工恢复。
++    throw new Error(`团队空间存储损坏，已停止读写：${storePath()}（${error.message}）`)
++  }
++  {
+     const all = {
+       tasks: Array.isArray(raw?.tasks) ? raw.tasks : Array.isArray(raw?.items) ? raw.items : [],
+       joins: Array.isArray(raw?.joins) ? raw.joins : [],
+@@ -603,8 +764,6 @@ function loadStore(channel = currentChannel()) {
+       notify: raw?.notify && typeof raw.notify === 'object' ? raw.notify : {},
+     }
+     return viewOf(all, channel)
+-  } catch {
+-    return { tasks: [], joins: [], todos: [], plugins: [], skills: [], repos: [], handoffs: [], hostDeviceId: '', notify: {} }
+   }
+ }
+ 
+@@ -2258,7 +2417,7 @@ export function apply(ctx) {
+           if (!name || !/^[@a-zA-Z0-9][\w@/.\-]*$/.test(name) || name.includes('..')) {
+             fail(E.BAD_REQUEST, '非法的插件名')
+           }
+-          const enabled = enableInstalled(name, clip(body.checksum, 128))
++          const enabled = await enableInstalled(name, clip(body.checksum, 128))
+           return { ok: true, name, enabled, needsRestart: true }
+         }),
+       }),
+@@ -2395,7 +2554,7 @@ export function apply(ctx) {
+               enabled: false, needsEnable: true, needsRestart: false,
+             }
+           }
+-          const enabled = enableInstalled(name, checksum)
++          const enabled = await enableInstalled(name, checksum)
+           return { ok: true, via, version, path: dest, checksum, enabled, needsRestart: true }
+           } finally {
+             INSTALL_LOCKS.delete(name)
+diff --git a/dev/check-store.mjs b/dev/check-store.mjs
+new file mode 100644
+index 0000000..8bfeb43
+--- /dev/null
++++ b/dev/check-store.mjs
+@@ -0,0 +1,100 @@
++#!/usr/bin/env node
++/**
++ * 存储健壮性：旧数据迁移（J01）+ 损坏不静默清空（J03）。
++ * 用临时 DSH_HOME 直接加载插件，不碰真实数据。
++ *   node dev/check-store.mjs
++ */
++import { createServer } from 'node:http'
++import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++
++let checks = 0
++let failures = 0
++function ok(name, cond, detail = '') {
++  checks += 1
++  console.log(`${cond ? '  ✓' : '  ✗'} ${name}${cond ? '' : ` — ${detail}`}`)
++  if (!cond) failures += 1
++}
++
++const home = mkdtempSync(join(tmpdir(), 'ts-store-'))
++process.env.DSH_HOME = home
++mkdirSync(join(home, 'storages'), { recursive: true })
++const storeFile = join(home, 'storages', 'team-space.json')
++
++const mod = await import(new URL('../lib/index.js', import.meta.url).href)
++const routes = []
++const ctx = {
++  webServer: { register: entry => routes.push(entry) },
++  sessionQuery: { readSession: async () => ({ events: [] }), readTitle: async () => ({ title: '' }) },
++  sessionPersistence: { create: async () => ({ append: async () => {}, flush: async () => {}, close: async () => {} }) },
++  agents: { create: async () => ({}) },
++  agentDefaultModel: { currentSelection: () => ({ provider: 'mock', model: 'mock' }) },
++  tools: { register: () => () => {} },
++  connection: { authenticatedUrl: url => url, lanAddress: () => '127.0.0.1' },
++  effect: fn => { try { fn?.() } catch { /* mock */ } },
++  onDispose: () => {},
++}
++mod.apply(ctx)
++const server = createServer((req, res) => {
++  const path = new URL(req.url, 'http://mock').pathname
++  const found = routes.find(entry => entry.path === path)
++  if (!found) {
++    res.statusCode = 404
++    res.end('{}')
++    return
++  }
++  Promise.resolve(found.handler(req, res)).catch(error => {
++    if (res.headersSent) return
++    res.statusCode = 500
++    res.end(JSON.stringify({ ok: false, error: error.message }))
++  })
++})
++await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
++const base = `http://127.0.0.1:${server.address().port}/api/team-space`
++
++async function call(path, body) {
++  const response = await fetch(`${base}/${path}`, {
++    method: body === undefined ? 'GET' : 'POST',
++    headers: body === undefined ? {} : { 'content-type': 'application/json' },
++    body: body === undefined ? undefined : JSON.stringify(body),
++  })
++  const text = await response.text()
++  let data = null
++  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
++  return { status: response.status, data }
++}
++
++// J01：旧格式（没有 channel 字段）能不能读出来
++writeFileSync(storeFile, JSON.stringify({
++  tasks: [{ id: 'old-task', title: '旧会话', sessionId: 'session-old', createdAt: 1 }],
++  skills: [{ id: 'old-skill', name: '旧技能', description: '旧', content: '旧正文', createdAt: 1 }],
++}))
++const migrated = await call('list')
++ok('J01 旧 store 的 tasks 能读出来', (migrated.data?.tables?.tasks ?? []).length === 1,
++  JSON.stringify(migrated.data?.tables?.tasks))
++ok('J01 旧 store 的 skills 能读出来', (migrated.data?.tables?.skills ?? []).length === 1)
++
++// J03：损坏的 store 不能被空数据覆盖
++writeFileSync(storeFile, '{ 这不是 JSON')
++const before = readFileSync(storeFile, 'utf8')
++const listed = await call('list')
++const wrote = await call('entry/upsert', {
++  table: 'skills',
++  entry: { name: 'new-skill', description: '新', content: '新正文' },
++})
++const after = readFileSync(storeFile, 'utf8')
++let parsed = null
++try { parsed = JSON.parse(after) } catch { parsed = null }
++ok('J03 损坏的 store 被写接口拒绝（不应静默重建）',
++  wrote.status >= 400 || after === before,
++  `写接口 HTTP ${wrote.status}，文件${after === before ? '未变' : '已被覆盖'}`)
++ok('J03 原文件内容仍可恢复（没有被空 store 覆盖）',
++  after === before || after.includes('这不是 JSON'),
++  `覆盖后内容：${after.slice(0, 120)}`)
++ok('J03 列表接口不把损坏当成空数据继续写', listed.status >= 400 || (listed.data?.ok !== true && after === before),
++  `HTTP ${listed.status}`)
++
++server.close()
++console.log(`\n结果：${checks - failures}/${checks} 通过${failures ? `，${failures} 条失败` : '，全部通过'}\n`)
++process.exit(failures ? 1 : 0)
+diff --git a/dev/e2e-j.mjs b/dev/e2e-j.mjs
+new file mode 100644
+index 0000000..6d2a9eb
+--- /dev/null
++++ b/dev/e2e-j.mjs
+@@ -0,0 +1,209 @@
++#!/usr/bin/env node
++/**
++ * J04 多进程并发写 + J07 载荷边界。
++ *
++ * J04 需要两个真实 DSH 进程（同一个 DSH_HOME/store）：
++ *   dsh web --port 0 --no-open   # 两个终端各起一次
++ *   node dev/e2e-j.mjs --a=http://127.0.0.1:56404 --b=http://127.0.0.1:57750
++ *
++ * 所有写操作走 test 通道，结束（含失败）时清理。
++ */
++import { existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs'
++import { homedir } from 'node:os'
++import { dirname, join } from 'node:path'
++
++const arg = name => process.argv.find(item => item.startsWith(`--${name}=`))?.slice(name.length + 3) ?? ''
++const A = arg('a').replace(/\/$/, '')
++const B = arg('b').replace(/\/$/, '')
++if (!A || !B) {
++  console.error('用法：node dev/e2e-j.mjs --a=http://127.0.0.1:<portA> --b=http://127.0.0.1:<portB>')
++  process.exit(2)
++}
++
++const TEST = { 'x-team-space-channel': 'test', accept: 'application/json' }
++const STAMP = `j-${Date.now().toString(36)}`
++const HOME = process.env.DSH_HOME ?? join(homedir(), '.dsh')
++const STORE = join(HOME, 'storages', 'team-space.json')
++const LOCK = `${STORE}.lock`
++const created = []
++let checks = 0
++let failures = 0
++
++function ok(name, cond, detail = '') {
++  checks += 1
++  console.log(`${cond ? '  ✓' : '  ✗'} ${name}${cond ? '' : ` — ${detail}`}`)
++  if (!cond) failures += 1
++}
++
++async function call(origin, path, { method = 'GET', body, channel = 'test' } = {}) {
++  const response = await fetch(`${origin}/api/team-space/${path}`, {
++    method,
++    headers: {
++      accept: 'application/json',
++      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
++      ...(channel === 'test' ? TEST : {}),
++    },
++    body: body === undefined ? undefined : JSON.stringify(body),
++    signal: AbortSignal.timeout(15_000),
++  })
++  const text = await response.text()
++  let data = null
++  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
++  return { status: response.status, data, text, ok: response.ok && data?.ok !== false }
++}
++
++async function upsert(origin, table, entry) {
++  const result = await call(origin, 'entry/upsert', { method: 'POST', body: { table, entry } })
++  if (!result.ok) throw new Error(`${table}/${entry.name} → HTTP ${result.status} ${result.data?.error ?? result.text.slice(0, 120)}`)
++  created.push({ table, id: result.data.entry.id })
++  return result.data.entry
++}
++
++async function cleanup() {
++  const seen = new Set()
++  for (const item of created) {
++    const key = `${item.table}:${item.id}`
++    if (seen.has(key)) continue
++    seen.add(key)
++    await call(A, 'entry/remove', { method: 'POST', body: { table: item.table, id: item.id } }).catch(() => null)
++  }
++  const list = await call(A, 'list').catch(() => null)
++  const leftovers = Object.entries(list?.data?.tables ?? {}).flatMap(([table, items]) =>
++    (items ?? []).filter(item => [item.name, item.title, item.url].filter(Boolean).join(' ').includes(STAMP)).map(item => ({ table, id: item.id })))
++  for (const item of leftovers) {
++    await call(A, 'entry/remove', { method: 'POST', body: item }).catch(() => null)
++  }
++}
++
++function assertStoreHealthy(label) {
++  let parsed = null
++  try { parsed = JSON.parse(readFileSync(STORE, 'utf8')) } catch { parsed = null }
++  ok(`${label}：store 仍是完整可解析 JSON`, Boolean(parsed))
++  const temps = readdirSync(dirname(STORE)).filter(name => name.startsWith('team-space.json.') && name.endsWith('.tmp'))
++  ok(`${label}：没有遗留半写临时文件`, temps.length === 0, temps.join(', '))
++  return parsed
++}
++
++async function j04() {
++  const aList = await call(A, 'list')
++  const bList = await call(B, 'list')
++  ok('J04 两个 DSH 进程都能读到同一份 store',
++    aList.ok && bList.ok
++      && (aList.data.tables?.skills ?? []).length === (bList.data.tables?.skills ?? []).length,
++    `A=${aList.status} B=${bList.status}`)
++
++  const rounds = 40
++  const started = Date.now()
++  const jobs = []
++  for (let index = 0; index < rounds; index += 1) {
++    for (const origin of [A, B]) {
++      jobs.push(call(origin, 'entry/upsert', {
++        method: 'POST',
++        body: {
++          table: 'todos',
++          entry: { title: `${STAMP}-race-${index}`, note: `并发写 ${index} @ ${origin}` },
++        },
++      }))
++    }
++  }
++  const results = await Promise.all(jobs)
++  for (const result of results) {
++    if (result.data?.entry?.id) created.push({ table: 'todos', id: result.data.entry.id })
++  }
++  ok('J04 两个进程并发发起 80 次写全部成功',
++    results.every(result => result.ok),
++    JSON.stringify(results.filter(result => !result.ok).slice(0, 4).map(result => ({ status: result.status, error: result.data?.error }))))
++  const after = await call(A, 'list')
++  const ids = new Set((after.data?.tables?.todos ?? []).map(item => item.id))
++  const written = results.map(result => result.data?.entry?.id).filter(Boolean)
++  const rows = written.filter(id => ids.has(id))
++  const afterB = await call(B, 'list')
++  const idsB = new Set((afterB.data?.tables?.todos ?? []).map(item => item.id))
++  let rawIds = new Set()
++  try {
++    const raw = JSON.parse(readFileSync(STORE, 'utf8'))
++    rawIds = new Set((raw.todos ?? []).map(item => item.id))
++  } catch { /* 由下一个断言报 */ }
++  const bySite = Object.fromEntries([A, B].map(origin => [origin, results
++    .filter(result => String(result.data?.entry?.note ?? '').endsWith(`@ ${origin}`))
++    .map(result => result.data?.entry?.id)
++    .filter(Boolean)
++    .filter(id => ids.has(id)).length]))
++  ok('J04 80 条并发记录一条不少（无丢失更新）', rows.length === rounds * 2,
++    JSON.stringify({ actualA: rows.length, actualB: written.filter(id => idsB.has(id)).length, raw: written.filter(id => rawIds.has(id)).length, bySite, written: written.length }))
++  ok('J04 并发写没有把 store 写坏', Boolean(assertStoreHealthy('J04')))
++  console.log(`     80 次并发写耗时 ${Date.now() - started}ms`)
++
++  if (existsSync(LOCK)) {
++    ok('J04 锁超时前置条件：跑测试前没有残留锁', false, LOCK)
++    return
++  }
++  writeFileSync(LOCK, `${process.pid}-live-holder`)
++  try {
++    const blocked = await call(A, 'entry/upsert', {
++      method: 'POST',
++    body: { table: 'todos', entry: { title: `${STAMP}-locked`, note: '应被锁拒绝' } },
++    })
++    ok('J04 有活进程持锁时写请求超时并返回明确错误',
++      blocked.status >= 400 && /另一个进程写入|稍后重试/.test(String(blocked.data?.error ?? blocked.text)),
++      `HTTP ${blocked.status} ${blocked.data?.error ?? blocked.text.slice(0, 120)}`)
++    const still = await call(A, 'list')
++    ok('J04 被锁拒绝的记录没有偷偷写入',
++      !(still.data?.tables?.todos ?? []).some(item => item.title === `${STAMP}-locked`))
++  } finally {
++    try { unlinkSync(LOCK) } catch { /* 已清理 */ }
++  }
++}
++
++async function j07() {
++  const exact = await upsert(A, 'skills', {
++    name: `${STAMP}-content-200k`,
++    description: '边界：正文恰好 200000',
++    content: 'A'.repeat(200_000),
++  })
++  const over = await upsert(B, 'skills', {
++    name: `${STAMP}-content-over`,
++    description: 'D'.repeat(2_000),
++    content: 'B'.repeat(200_001),
++  })
++  const longRepo = await upsert(A, 'repos', {
++    name: `N${STAMP}${'X'.repeat(300)}`,
++    url: `https://gitlab.txzing.com/${'x'.repeat(700)}`,
++    description: 'E'.repeat(5_000),
++    type: 'git',
++  })
++
++  const exactDetail = await call(B, `detail?table=skills&id=${encodeURIComponent(exact.id)}`)
++  const overDetail = await call(A, `detail?table=skills&id=${encodeURIComponent(over.id)}`)
++  const repoDetail = await call(B, `detail?table=repos&id=${encodeURIComponent(longRepo.id)}`)
++
++  ok('J07 正文恰好 200KB 能完整保存', exactDetail.ok && exactDetail.data.entry?.content?.length === 200_000,
++    `len=${exactDetail.data?.entry?.content?.length}`)
++  ok('J07 正文超过 200KB 按上限截断且不报 500',
++    overDetail.ok && overDetail.data.entry?.content?.length === 200_000,
++    `HTTP=${overDetail.status} len=${overDetail.data?.entry?.content?.length}`)
++  ok('J07 skill 描述 2000 → 截断到 200', overDetail.data?.entry?.description?.length === 200,
++    `len=${overDetail.data?.entry?.description?.length}`)
++  ok('J07 链接名称超长 → 截断到 120', repoDetail.data?.entry?.name?.length === 120,
++    `len=${repoDetail.data?.entry?.name?.length}`)
++  ok('J07 链接 URL 超长 → 截断到 500', repoDetail.data?.entry?.url?.length === 500,
++    `len=${repoDetail.data?.entry?.url?.length}`)
++  ok('J07 链接描述超长 → 截断到 1000', repoDetail.data?.entry?.description?.length === 1_000,
++    `len=${repoDetail.data?.entry?.description?.length}`)
++  assertStoreHealthy('J07')
++}
++
++try {
++  console.log(`\nJ04 / J07 · A=${A} B=${B} · ${STAMP}\n`)
++  await j04()
++  await j07()
++} finally {
++  await cleanup()
++  const residual = await call(A, 'list').then(result => Object.entries(result.data?.tables ?? {})
++    .flatMap(([table, items]) => (items ?? []).filter(item => [item.name, item.title, item.url].filter(Boolean).join(' ').includes(STAMP)).map(item => ({ table, name: item.name, title: item.title })))).catch(() => [])
++  ok('J04/J07 测试无残留', residual.length === 0, JSON.stringify(residual))
++  try { if (existsSync(LOCK)) unlinkSync(LOCK) } catch { /* 忽略 */ }
++}
++
++console.log(`\n结果：${checks - failures}/${checks} 通过${failures ? `，${failures} 条失败` : '，全部通过'}\n`)
++process.exit(failures ? 1 : 0)
+diff --git a/dev/e2e-member.mjs b/dev/e2e-member.mjs
+new file mode 100644
+index 0000000..9d2aaa5
+--- /dev/null
++++ b/dev/e2e-member.mjs
+@@ -0,0 +1,188 @@
++#!/usr/bin/env node
++/**
++ * 成员端 / 门店端冒烟：在成员机上跑，验证「连主服务器」这条链路。
++ *
++ *   node dev/e2e-member.mjs \
++ *     --server http://<主服务器>:8080/api/team-space \
++ *     --local  http://127.0.0.1:<本机端口>/api/team-space \
++ *     --name Neo --device <客户端 deviceId>
++ *
++ * 所有写操作走 test 通道，跑完清理；不触发企微通知。
++ */
++const args = Object.fromEntries(process.argv.slice(2).map(item => {
++  const [key, ...rest] = item.replace(/^--/, '').split('=')
++  return [key, rest.join('=')]
++}))
++const SERVER = String(args.server ?? '').replace(/\/$/, '')
++const LOCAL = String(args.local ?? '').replace(/\/$/, '')
++const NAME = String(args.name ?? 'member')
++const DEVICE = String(args.device ?? '')
++const TEST = { 'x-team-space-channel': 'test' }
++
++if (!SERVER) {
++  console.error('缺少 --server')
++  process.exit(2)
++}
++
++let checks = 0
++let failures = 0
++function ok(name, cond, detail = '') {
++  checks += 1
++  if (cond) console.log(`  ✓ ${name}`)
++  else {
++    failures += 1
++    console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ''}`)
++  }
++}
++
++async function req(base, path, { method = 'GET', body, headers } = {}) {
++  const merged = {
++    accept: 'application/json',
++    ...(body === undefined ? {} : { 'content-type': 'application/json' }),
++    ...(headers ?? {}),
++  }
++  const response = await fetch(`${base}/${path}`, {
++    method,
++    headers: merged,
++    body: body === undefined ? undefined : JSON.stringify(body),
++    signal: AbortSignal.timeout(8000),
++  })
++  const text = await response.text()
++  let data = null
++  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
++  return { status: response.status, data, text }
++}
++async function call(base, path, body, headers) {
++  const { status, data, text } = await req(base, path, { method: body === undefined ? 'GET' : 'POST', body, headers })
++  if (status < 200 || status >= 300 || data?.ok === false) {
++    throw new Error(`${path} → ${status} ${data?.error ?? text.slice(0, 80)}`)
++  }
++  return data
++}
++function versionGt(a, b) {
++  const pa = String(a).split('.').map(Number)
++  const pb = String(b).split('.').map(Number)
++  for (let i = 0; i < 3; i += 1) {
++    if ((pa[i] ?? 0) > (pb[i] ?? 0)) return true
++    if ((pa[i] ?? 0) < (pb[i] ?? 0)) return false
++  }
++  return false
++}
++
++async function main() {
++  const stamp = `mem-${Date.now().toString(36)}`
++  console.log(`\n成员端冒烟 · ${NAME} → ${SERVER}\n`)
++
++  // 1. 网络与主服务器
++  const list = await call(SERVER, 'list')
++  ok('成员能连上主服务器 /list', Boolean(list.tables))
++
++  // 2. G08：列表不返回纯本机字段
++  const firstRow = Object.values(list.tables ?? {}).flat()[0] ?? {}
++  ok('G08 /list 不含 installedLink', !('installedLink' in firstRow), Object.keys(firstRow).join(','))
++
++  // 3. 本机安装态（成员视角）
++  if (LOCAL) {
++    const local = await call(LOCAL, 'local-state?plugins=dsh-team-space')
++    const info = local.plugins?.['dsh-team-space'] ?? {}
++    ok('G07 本机识别为「已安装」', info.installed === true, JSON.stringify(info))
++    ok('G07 成员端 installedLink=false（不是发布者）', info.installedLink === false, JSON.stringify(info))
++
++    const manifest = (list.tables?.plugins ?? []).find(item => item.name === 'dsh-team-space')
++    if (manifest?.version) {
++      const installed = String(info.installedVersion ?? '')
++      const latest = String(manifest.version)
++      if (versionGt(latest, installed)) {
++        ok('I03 成员端版本低于清单 → 应提示「更新」', true, `本机 ${installed} / 清单 ${latest}`)
++      } else if (installed === latest) {
++        ok('I03 升级后版本与清单一致 → 应显示「当前插件」', true, `${installed} = ${latest}`)
++      } else {
++        ok('I03 本机版本不应高于清单（版本号可能写错）', false, `本机 ${installed} / 清单 ${latest}`)
++      }
++    } else {
++      console.log('  - 清单里没有 dsh-team-space 条目，跳过版本比较')
++    }
++  }
++
++  // 4. 主服务器建委托给成员（test 通道，不发通知）
++  const created = await call(SERVER, 'handoff/create', {
++    title: `${stamp}-handoff`,
++    brief: '成员端冒烟：认领并交回',
++    target: NAME,
++    owner: '主服务器',
++  }, TEST)
++  const handoffId = created.item?.id ?? created.id
++
++  const memberView = await call(SERVER, `list?deviceId=${encodeURIComponent(DEVICE)}&name=${encodeURIComponent(NAME)}`, undefined, TEST)
++  const strangerView = await call(SERVER, `list?deviceId=${encodeURIComponent(`${stamp}-stranger`)}&name=路人`, undefined, TEST)
++  ok('B05 指定成员能看到给自己的委托',
++    (memberView.tables?.handoffs ?? []).some(item => item.id === handoffId))
++  ok('B05 路人看不到别人的委托',
++    !(strangerView.tables?.handoffs ?? []).some(item => item.id === handoffId))
++
++  // 5. 成员认领 + 交回（真实门店端工作流）
++  await call(SERVER, 'handoff/claim', { id: handoffId, by: NAME, deviceId: DEVICE }, TEST)
++  const claimed = await call(SERVER, `detail?table=handoffs&id=${encodeURIComponent(handoffId)}`, undefined, TEST)
++  ok('B06 成员认领后状态 doing', claimed.entry?.status === 'doing', claimed.entry?.status)
++  await call(SERVER, 'handoff/complete', { id: handoffId, result: '门店端跑完', by: NAME, deviceId: DEVICE }, TEST)
++  const done = await call(SERVER, `detail?table=handoffs&id=${encodeURIComponent(handoffId)}`, undefined, TEST)
++  ok('B07 成员交回后状态 done 且 result 落库',
++    done.entry?.status === 'done' && done.entry?.result === '门店端跑完',
++    JSON.stringify({ status: done.entry?.status, result: done.entry?.result }))
++
++  // 6. 成员写入 + 通道隔离
++  const todo = await call(SERVER, 'entry/upsert', {
++    table: 'todos',
++    entry: { name: `${stamp}-todo`, description: '门店端写入' },
++  }, TEST)
++  const testList = await call(SERVER, 'list', undefined, TEST)
++  ok('成员能写入共享数据（test 通道）',
++    (testList.tables?.todos ?? []).some(item => item.id === todo.entry.id))
++  const prodList = await call(SERVER, 'list')
++  ok('F02 成员写的测试数据不污染真实列表',
++    !(prodList.tables?.todos ?? []).some(item => item.id === todo.entry.id))
++
++  // 7. MCP（成员零安装接入）
++  const mcpTools = await req(SERVER, 'mcp', {
++    method: 'POST',
++    body: { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },
++  })
++  ok('成员端 MCP 暴露 9 个工具',
++    (mcpTools.data?.result?.tools ?? []).length === 9,
++    String((mcpTools.data?.result?.tools ?? []).length))
++  const mcpSkills = await req(SERVER, 'mcp', {
++    method: 'POST',
++    body: { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'team_space_list_skills', arguments: {} } },
++    headers: TEST,
++  })
++  ok('成员端 MCP 能读技能列表', !mcpSkills.data?.result?.isError)
++
++  // 8. 门户与下载
++  const portal = await req(SERVER, 'portal')
++  ok('成员能打开团队空间门户', portal.status === 200 && /<html/i.test(portal.text))
++  const guide = await req(SERVER, 'guide')
++  ok('成员能打开新手引导', guide.status === 200 && /<html/i.test(guide.text))
++  const manifestVersion = (list.tables?.plugins ?? []).find(item => item.name === 'dsh-team-space')?.version
++  if (manifestVersion) {
++    const download = await req(SERVER, `download?file=${encodeURIComponent(`dsh-team-space-${manifestVersion}.tgz`)}`)
++    ok('I02 成员能下载清单里的安装包', download.status === 200, `HTTP ${download.status}`)
++  }
++
++  // 9. 清理
++  await call(SERVER, 'entry/remove', { table: 'todos', id: todo.entry.id }, TEST)
++  const gw = await call(SERVER, 'gateway-status')
++  await call(SERVER, 'handoff/remove', { id: handoffId, deviceId: gw.deviceId }, TEST)
++  const residual = await call(SERVER, 'list', undefined, TEST)
++  const leftoverTodos = (residual.tables?.todos ?? []).filter(item => String(item.name ?? '').startsWith(stamp))
++  const leftoverHandoffs = (residual.tables?.handoffs ?? []).filter(item => String(item.title ?? '').startsWith(stamp))
++  ok('成员端测试无残留', leftoverTodos.length === 0 && leftoverHandoffs.length === 0,
++    `todos=${leftoverTodos.length} handoffs=${leftoverHandoffs.length}`)
++
++  console.log(`\n结果：${checks - failures}/${checks} 通过${failures ? `，${failures} 条失败` : '，全部通过'}\n`)
++  process.exit(failures ? 1 : 0)
++}
++
++main().catch(error => {
++  console.error('\n成员端冒烟中断：', error.message, '\n')
++  process.exit(1)
++})
+diff --git a/dev/e2e-offline.cjs b/dev/e2e-offline.cjs
+new file mode 100644
+index 0000000..5c252b6
+--- /dev/null
++++ b/dev/e2e-offline.cjs
+@@ -0,0 +1,187 @@
++#!/usr/bin/env node
++/**
++ * J08：客户端断网。
++ *
++ * 在真实浏览器里分别中断「认领委托」与「确认分享」请求，验证：
++ * - 有明确失败提示；
++ * - 页面不白屏；
++ * - 服务端状态没有被静默改掉。
++ *
++ * 依赖 Playwright：
++ *   NODE_PATH="$PWD/node_modules" node dev/e2e-offline.cjs \
++ *     --url=http://127.0.0.1:<port>/?token=...
++ */
++const { chromium } = require('playwright')
++const { join, resolve } = require('node:path')
++const { mkdirSync } = require('node:fs')
++
++const arg = name => process.argv.find(item => item.startsWith(`--${name}=`))?.slice(name.length + 3) ?? ''
++const URL_ARG = arg('url')
++const SHOTS = resolve(arg('shots') || join(__dirname, '..', 'docs', 'images'))
++if (!URL_ARG) {
++  console.error('用法：node dev/e2e-offline.cjs --url=http://127.0.0.1:<port>/?token=...')
++  process.exit(2)
++}
++
++const parsed = new URL(URL_ARG)
++const API = `${parsed.origin}/api/team-space`
++const STAMP = `offline-${Date.now().toString(36)}`
++const TEST = { 'x-team-space-channel': 'test', accept: 'application/json' }
++const handoffIds = []
++let checks = 0
++let failures = 0
++
++function ok(name, cond, detail = '') {
++  checks += 1
++  console.log(`${cond ? '  ✓' : '  ✗'} ${name}${cond ? '' : ` — ${detail}`}`)
++  if (!cond) failures += 1
++}
++
++async function api(path, { method = 'GET', body } = {}) {
++  const response = await fetch(`${API}/${path}`, {
++    method,
++    headers: {
++      ...TEST,
++      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
++    },
++    body: body === undefined ? undefined : JSON.stringify(body),
++  })
++  const text = await response.text()
++  let data = null
++  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
++  if (!response.ok || data?.ok === false) {
++    throw new Error(`${path} → HTTP ${response.status} ${data?.error ?? text.slice(0, 160)}`)
++  }
++  return data
++}
++
++async function cleanup() {
++  let deviceId = ''
++  try { deviceId = (await api('gateway-status')).deviceId ?? '' } catch { /* 忽略 */ }
++  for (const id of handoffIds) {
++    await api('handoff/remove', { method: 'POST', body: { id, deviceId } }).catch(() => null)
++  }
++}
++
++async function gotoApp(page) {
++  await page.goto(URL_ARG, { waitUntil: 'domcontentloaded', timeout: 30_000 })
++  await page.waitForTimeout(1800)
++  await page.evaluate(() => {
++    localStorage.setItem('team-space:name', 'Xinzhan')
++    localStorage.setItem('team-space:channel', 'test')
++  })
++  await page.reload({ waitUntil: 'domcontentloaded' })
++  await page.waitForTimeout(1800)
++}
++
++async function openTeam(page) {
++  await page.locator('.ts-nav-text').click()
++  await page.locator('.ts-root').waitFor({ state: 'visible', timeout: 10_000 })
++  await page.waitForTimeout(500)
++}
++
++async function clickTab(page, label) {
++  await page.locator('.ts-tab').filter({ hasText: label }).click()
++  await page.waitForTimeout(350)
++}
++
++async function main() {
++  mkdirSync(SHOTS, { recursive: true })
++  console.log(`\nJ08 客户端断网 · ${parsed.origin} · ${STAMP}\n`)
++
++  const handoff = await api('handoff/create', {
++    method: 'POST',
++    body: {
++      title: `${STAMP}-待认领`,
++      brief: 'J08：认领请求被中断时，不得静默成功，也不得白屏。',
++      target: 'Xinzhan',
++      owner: 'J08',
++      author: { name: 'J08' },
++    },
++  })
++  handoffIds.push(handoff.id)
++
++  const browser = await chromium.launch({ channel: 'chrome', headless: true })
++  try {
++    const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
++    await gotoApp(page)
++    await openTeam(page)
++
++    // 1) 认领：服务端请求被中断
++    await clickTab(page, '委托')
++    const card = page.locator('.ts-session').filter({ hasText: `${STAMP}-待认领` }).first()
++    await card.waitFor({ state: 'visible', timeout: 8000 })
++    await page.route('**/api/team-space/handoff/claim**', route => route.abort('failed'))
++    await card.getByRole('button', { name: '接收', exact: true }).click()
++    const claimError = page.locator('.ts-error').last()
++    await claimError.waitFor({ state: 'visible', timeout: 6000 })
++    const claimErrorText = (await claimError.innerText()).trim()
++    ok('J08 认领断网时显示可行动的中文错误',
++      claimErrorText.includes('连不上团队空间服务器') && claimErrorText.includes('重试'),
++      `error=${JSON.stringify(claimErrorText)}`)
++    ok('J08 认领断网后页面仍在，没有白屏',
++      await page.locator('.ts-root').isVisible() && await page.locator('.ts-brand').isVisible())
++    ok('J08 认领断网后卡片仍是待接收',
++      (await card.locator('.ts-badge').innerText()).trim() === '待接收'
++        && await card.getByRole('button', { name: '接收', exact: true }).isVisible())
++    const afterClaim = await api(`detail?table=handoffs&id=${encodeURIComponent(handoff.id)}`)
++    ok('J08 认领断网后服务端仍为 open，未被静默认领',
++      afterClaim.entry?.status === 'open' && !afterClaim.entry?.assignee,
++      JSON.stringify({ status: afterClaim.entry?.status, assignee: afterClaim.entry?.assignee }))
++    await page.screenshot({ path: join(SHOTS, 'ui-J08-offline-claim.png'), fullPage: true })
++    await page.unroute('**/api/team-space/handoff/claim**')
++
++    // 2) 分享：预览成功后，中断“确认上传”
++    const sessionTitle = page.getByText('分析仓库并更新git', { exact: true }).first()
++    const sessionTitleVisible = await sessionTitle.isVisible().catch(() => false)
++    if (!sessionTitleVisible) {
++      await page.getByRole('button', { name: /展开其余/ }).click().catch(() => null)
++      await page.waitForTimeout(500)
++    }
++    await sessionTitle.waitFor({ state: 'visible', timeout: 8000 })
++    await sessionTitle.hover()
++    const rowMenu = page.locator('button[aria-label^="会话"]').first()
++    await rowMenu.waitFor({ state: 'visible', timeout: 5000 })
++    await rowMenu.click()
++
++    const shareItem = page.getByRole('menuitem', { name: '分享到团队空间' })
++    await shareItem.waitFor({ state: 'visible', timeout: 5000 })
++    await shareItem.click()
++    const dialog = page.getByRole('dialog').last()
++    await dialog.waitFor({ state: 'visible', timeout: 10_000 })
++    const previewText = await dialog.innerText()
++    ok('J08 分享先展示本地快照预览，再允许上传',
++      previewText.includes('确认后才会上传') && previewText.includes('分析仓库并更新git'))
++
++    const tasksBefore = new Set(((await api('list')).tables?.tasks ?? []).map(item => item.id))
++    await page.route('**/api/team-space/share**', route => route.abort('failed'))
++    await dialog.getByRole('button', { name: '确认上传', exact: true }).click()
++    await dialog.getByText(/连不上团队空间服务器/).first()
++      .waitFor({ state: 'visible', timeout: 6000 }).catch(() => null)
++    const shareText = await dialog.innerText()
++    ok('J08 分享断网时在对话框内显示可行动的中文错误',
++      shareText.includes('连不上团队空间服务器') && shareText.includes('重试'), shareText.slice(-240))
++    ok('J08 分享断网时不显示「已分享到团队空间」，也不白屏',
++      !shareText.includes('已分享到团队空间')
++        && await page.locator('.ts-root').isVisible()
++        && await dialog.isVisible())
++    const tasksAfter = new Set(((await api('list')).tables?.tasks ?? []).map(item => item.id))
++    ok('J08 分享断网后服务端没有新增会话记录',
++      tasksAfter.size === tasksBefore.size && [...tasksAfter].every(id => tasksBefore.has(id)),
++      JSON.stringify({ before: tasksBefore.size, after: tasksAfter.size }))
++    await page.unroute('**/api/team-space/share**')
++    await page.close()
++  } finally {
++    await browser.close().catch(() => null)
++    await cleanup().catch(error => console.log(`  ! 清理失败：${error.message}`))
++  }
++
++  console.log(`\n结果：${checks - failures}/${checks} 通过${failures ? `，${failures} 条失败` : '，全部通过'}\n`)
++  process.exit(failures ? 1 : 0)
++}
++
++main().catch(async error => {
++  console.error('\nJ08 中断：', error.stack || error.message, '\n')
++  await cleanup().catch(() => null)
++  process.exit(1)
++})
+diff --git a/dev/e2e-p0.mjs b/dev/e2e-p0.mjs
+new file mode 100644
+index 0000000..49e0173
+--- /dev/null
++++ b/dev/e2e-p0.mjs
+@@ -0,0 +1,202 @@
++#!/usr/bin/env node
++/**
++ * P0 冒烟：补 selftest 没覆盖的路由（detail / download / member / portal / guide /
++ * export-codex-skill / handoff/consume / MCP 跨通道）。
++ *
++ *   node dev/e2e-p0.mjs [port]
++ *
++ * 全部走 test 通道，跑完清理；只读接口（portal / guide）走真实通道。
++ */
++import { execSync } from 'node:child_process'
++import { existsSync, readFileSync, rmSync } from 'node:fs'
++import { dirname, join } from 'node:path'
++import { homedir } from 'node:os'
++
++const SUFFIX = '/api/team-space'
++const TEST = { 'x-team-space-channel': 'test' }
++let checks = 0
++let failures = 0
++
++function ok(name, cond, detail = '') {
++  checks += 1
++  if (cond) console.log(`  ✓ ${name}`)
++  else {
++    failures += 1
++    console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ''}`)
++  }
++}
++
++function discoverPort() {
++  const out = execSync('lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null || true').toString()
++  return [...new Set([...out.matchAll(/127\.0\.0\.1:(\d+)\s/g)].map(m => Number(m[1])))]
++}
++
++async function findBase(explicit) {
++  for (const port of explicit ? [Number(explicit)] : discoverPort()) {
++    try {
++      const response = await fetch(`http://127.0.0.1:${port}${SUFFIX}/list`, { signal: AbortSignal.timeout(1500) })
++      const data = await response.json().catch(() => null)
++      if (response.ok && data?.tables) return { port, base: `http://127.0.0.1:${port}${SUFFIX}` }
++    } catch { /* next */ }
++  }
++  throw new Error('没找到在跑的 team-space API（DSH 没启动？）')
++}
++
++async function req(base, path, { method = 'GET', body, headers } = {}) {
++  const merged = {
++    accept: 'application/json',
++    ...(body === undefined ? {} : { 'content-type': 'application/json' }),
++    ...(headers ?? {}),
++  }
++  const response = await fetch(`${base}/${path}`, {
++    method,
++    headers: merged,
++    body: body === undefined ? undefined : JSON.stringify(body),
++  })
++  const text = await response.text()
++  let data = null
++  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
++  return { status: response.status, data, text }
++}
++
++async function call(base, path, body, headers) {
++  const { status, data, text } = await req(base, path, { method: body === undefined ? 'GET' : 'POST', body, headers })
++  if (status < 200 || status >= 300 || data?.ok === false) {
++    throw new Error(`${path} → ${status} ${data?.error ?? text.slice(0, 80)}`)
++  }
++  return data
++}
++
++const mcp = async (base, body, headers) => {
++  const { data } = await req(base, 'mcp', { method: 'POST', body, headers })
++  return data
++}
++const mcpCall = async (base, name, args, headers) => {
++  const reply = await mcp(base, { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }, headers)
++  const text = reply?.result?.content?.[0]?.text ?? '{}'
++  let payload = null
++  try { payload = JSON.parse(text) } catch { payload = { raw: text } }
++  return { payload, isError: Boolean(reply?.result?.isError) }
++}
++
++async function main() {
++  const { base } = await findBase(process.argv[2])
++  const stamp = `p0-${Date.now().toString(36)}`
++  const skillName = `${stamp}-skill`
++  const memberName = `${stamp}-member`
++  const exportName = `${stamp}-export`
++  let handoffId = ''
++
++  console.log(`\nP0 冒烟 · ${base}\n`)
++
++  // C05：列表不带正文，detail 才带
++  const upserted = await call(base, 'entry/upsert', {
++    table: 'skills',
++    entry: { name: skillName, description: 'p0 冒烟', content: 'P0 BODY 正文' },
++  }, TEST)
++  const testList = await call(base, 'list', undefined, TEST)
++  const listed = (testList.tables?.skills ?? []).find(item => item.name === skillName)
++  ok('C05 /list 里没有技能正文', Boolean(listed) && !('content' in listed))
++  const detail = await call(base, `detail?table=skills&id=${encodeURIComponent(upserted.entry.id)}`, undefined, TEST)
++  ok('C05 /detail 返回技能正文', detail.entry?.content === 'P0 BODY 正文', JSON.stringify(detail).slice(0, 160))
++
++  // F02：真实通道看不到测试记录
++  const prodList = await call(base, 'list')
++  ok('F02 真实列表看不到测试技能', !(prodList.tables?.skills ?? []).some(item => item.name === skillName))
++  const prodDetail = await req(base, `detail?table=skills&id=${encodeURIComponent(upserted.entry.id)}`)
++  ok('F05 真实通道连详情也取不到测试记录', prodDetail.data?.ok === false)
++
++  // D11：下载路径穿越
++  for (const file of ['../../etc/passwd', '..%2F..%2Fetc%2Fpasswd', '/etc/passwd', 'a/b.tgz']) {
++    const result = await req(base, `download?file=${file}`)
++    ok(`D11 拒绝非法文件名 ${file}`, result.status === 400, `HTTP ${result.status}`)
++  }
++
++  // E05：成员卡
++  await call(base, 'member/save', { name: memberName, bio: '## 能接什么活\n- p0 冒烟' }, TEST)
++  const members = await call(base, 'member/list', undefined, TEST)
++  ok('E05 成员卡保存后可见',
++    (members.members ?? []).some(item => item.name === memberName),
++    JSON.stringify(members).slice(0, 160))
++
++  const mcpMembers = await mcpCall(base, 'team_space_list_members', {}, TEST)
++  ok('E07 MCP list_members 的 memberCards 与 /member/list 成员集合一致',
++    (mcpMembers.payload.memberCards ?? []).some(item => item.name === memberName),
++    JSON.stringify(mcpMembers.payload).slice(0, 160))
++
++  // E08：局域网地址
++  const lan = await call(base, `lan-link?base=${encodeURIComponent('http://127.0.0.1:8080')}`, undefined, TEST)
++  ok('E08 /lan-link 返回可访问地址', /^https?:\/\//.test(String(lan.url ?? '')), JSON.stringify(lan))
++
++  // B16：投递标记
++  const handoff = await call(base, 'handoff/create', { title: `${stamp}-consume`, brief: 'p0', owner: 'p0' }, TEST)
++  handoffId = handoff.item?.id ?? handoff.id
++  await call(base, 'handoff/consume', { id: handoffId }, TEST)
++  const consumed = await call(base, `detail?table=handoffs&id=${encodeURIComponent(handoffId)}`, undefined, TEST)
++  ok('B16 consume 写 deliveredAt 且不改状态',
++    Boolean(consumed.entry?.deliveredAt) && consumed.entry?.status === 'open',
++    JSON.stringify({ deliveredAt: consumed.entry?.deliveredAt, status: consumed.entry?.status }))
++
++  // D10：导出 Codex skill
++  const exported = await call(base, 'export-codex-skill', {
++    name: exportName,
++    description: 'p0 导出',
++    content: 'P0 EXPORT 正文',
++  }, TEST)
++  const exportFile = exported.path ?? join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'skills', exportName, 'SKILL.md')
++  ok('D10 导出文件真的落盘且带正文',
++    existsSync(exportFile) && readFileSync(exportFile, 'utf8').includes('P0 EXPORT 正文'),
++    exportFile)
++
++  // 只读页面
++  const guide = await req(base, 'guide')
++  ok('门户新手引导返回 HTML', guide.status === 200 && /<html/i.test(guide.text), `HTTP ${guide.status}`)
++  const portal = await req(base, 'portal')
++  ok('G05 门户页可打开', portal.status === 200 && /<html/i.test(portal.text), `HTTP ${portal.status}`)
++  ok('门户页内置 test 通道横幅逻辑', /test-banner/.test(portal.text))
++  ok('门户页是只读的（没有 entry/upsert 写入口）', !/entry\/upsert/.test(portal.text))
++
++  // G / J06：MCP 跨端与通道
++  const toolsList = await mcp(base, { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} })
++  const toolNames = (toolsList?.result?.tools ?? []).map(item => item.name)
++  ok('G11 MCP 暴露 9 个工具', toolNames.length === 9, toolNames.join(','))
++
++  const prodMcp = await mcpCall(base, 'team_space_list_skills', {})
++  ok('J06 真实通道 MCP 看不到测试技能',
++    !(prodMcp.payload.skills ?? []).some(item => item.name === skillName),
++    JSON.stringify(prodMcp.payload).slice(0, 160))
++  const testMcp = await mcpCall(base, 'team_space_list_skills', {}, TEST)
++  ok('J06 测试通道 MCP 能看到测试技能',
++    (testMcp.payload.skills ?? []).some(item => item.name === skillName))
++  const got = await mcpCall(base, 'team_space_get_skill', { name: skillName }, TEST)
++  ok('G03 MCP get_skill 返回正文', got.payload.content === 'P0 BODY 正文', JSON.stringify(got.payload).slice(0, 160))
++  const gotProd = await mcpCall(base, 'team_space_get_skill', { name: skillName })
++  ok('J06 真实通道 MCP 取不到测试技能', gotProd.isError === true)
++
++  // 清理
++  const after = await call(base, 'list', undefined, TEST)
++  for (const item of after.tables?.skills ?? []) {
++    if (item.name?.startsWith(stamp)) {
++      await call(base, 'entry/remove', { table: 'skills', id: item.id }, TEST)
++    }
++  }
++  if (handoffId) {
++    const gw = await call(base, 'gateway-status')
++    await call(base, 'handoff/remove', { id: handoffId, deviceId: gw.deviceId }, TEST)
++  }
++  try { rmSync(dirname(exportFile), { recursive: true, force: true }) } catch { /* 清理失败不影响结果 */ }
++
++  const residual = await call(base, 'list', undefined, TEST)
++  const leftoverSkills = (residual.tables?.skills ?? []).filter(item => item.name?.startsWith(stamp))
++  const leftoverHandoffs = (residual.tables?.handoffs ?? []).filter(item => String(item.title ?? '').startsWith(stamp))
++  ok('测试通道无残留', leftoverSkills.length === 0 && leftoverHandoffs.length === 0,
++    `skills=${leftoverSkills.length} handoffs=${leftoverHandoffs.length}`)
++
++  console.log(`\n结果：${checks - failures}/${checks} 通过${failures ? `，${failures} 条失败` : '，全部通过'}\n`)
++  process.exit(failures ? 1 : 0)
++}
++
++main().catch(error => {
++  console.error('\nP0 冒烟中断：', error.message, '\n')
++  process.exit(1)
++})
+diff --git a/dev/e2e-restart.mjs b/dev/e2e-restart.mjs
+new file mode 100644
+index 0000000..bb2d054
+--- /dev/null
++++ b/dev/e2e-restart.mjs
+@@ -0,0 +1,191 @@
++#!/usr/bin/env node
++/**
++ * J02：真实 DSH 宿主重启持久化。
++ *
++ * 自己拉起 `dsh web`，写入 test 通道数据，停进程，再用新进程读回。
++ * 不碰正式服务；数据带随机 stamp，结束（含失败）时清理。
++ *   node dev/e2e-restart.mjs
++ */
++import { spawn } from 'node:child_process'
++import { once } from 'node:events'
++import { fileURLToPath } from 'node:url'
++
++const TEST = { 'x-team-space-channel': 'test', accept: 'application/json' }
++const STAMP = `restart-${Date.now().toString(36)}`
++const created = []
++let checks = 0
++let failures = 0
++let current = null
++
++function ok(name, cond, detail = '') {
++  checks += 1
++  console.log(`${cond ? '  ✓' : '  ✗'} ${name}${cond ? '' : ` — ${detail}`}`)
++  if (!cond) failures += 1
++}
++
++function startHost() {
++  return new Promise((resolve, reject) => {
++    const child = spawn('dsh', ['web', '--port', '0', '--no-open'], {
++      cwd: fileURLToPath(new URL('..', import.meta.url)),
++      env: process.env,
++      stdio: ['ignore', 'pipe', 'pipe'],
++    })
++    let output = ''
++    const timer = setTimeout(() => {
++      child.kill('SIGTERM')
++      reject(new Error(`DSH 启动超时：${output.slice(-800)}`))
++    }, 60_000)
++    const onData = chunk => {
++      output += chunk.toString()
++      const match = output.match(/http:\/\/127\.0\.0\.1:(\d+)\/\?token=([^\s]+)/)
++      if (!match) return
++      clearTimeout(timer)
++      const port = Number(match[1])
++      child.__port = port
++      child.__url = match[0]
++      resolve({ child, port, url: match[0], base: `http://127.0.0.1:${port}/api/team-space` })
++    }
++    child.stdout.on('data', onData)
++    child.stderr.on('data', onData)
++    child.once('error', error => { clearTimeout(timer); reject(error) })
++    child.once('exit', code => {
++      clearTimeout(timer)
++      reject(new Error(`DSH 在给出地址前退出（code=${code}）：${output.slice(-800)}`))
++    })
++  })
++}
++
++async function stopHost(host) {
++  if (!host?.child || host.child.exitCode !== null) return
++  host.child.kill('SIGTERM')
++  await Promise.race([
++    once(host.child, 'exit'),
++    new Promise(resolve => setTimeout(() => {
++      try { host.child.kill('SIGKILL') } catch { /* 忽略 */ }
++      resolve()
++    }, 8000)),
++  ])
++}
++
++async function call(base, path, { method = 'GET', body, channel = 'test' } = {}) {
++  const response = await fetch(`${base}/${path}`, {
++    method,
++    headers: {
++      accept: 'application/json',
++      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
++      ...(channel === 'test' ? TEST : {}),
++    },
++    body: body === undefined ? undefined : JSON.stringify(body),
++    signal: AbortSignal.timeout(15_000),
++  })
++  const text = await response.text()
++  let data = null
++  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
++  return { status: response.status, data, text, ok: response.ok && data?.ok !== false }
++}
++
++async function upsert(base, table, entry) {
++  const result = await call(base, 'entry/upsert', { method: 'POST', body: { table, entry } })
++  if (!result.ok) throw new Error(`${table}/${entry.name} → HTTP ${result.status} ${result.data?.error ?? result.text.slice(0, 120)}`)
++  created.push({ table, id: result.data.entry.id })
++  return result.data.entry
++}
++
++async function cleanup(host) {
++  if (!host) return
++  for (const item of created) {
++    await call(host.base, 'entry/remove', { method: 'POST', body: item }).catch(() => null)
++  }
++  if (created.handoffId) {
++    const gateway = await call(host.base, 'gateway-status').catch(() => null)
++    await call(host.base, 'handoff/remove', {
++      method: 'POST',
++      body: { id: created.handoffId, deviceId: gateway?.data?.deviceId ?? '' },
++    }).catch(() => null)
++  }
++}
++
++async function main() {
++  console.log(`\nJ02 重启持久化 · ${STAMP}\n`)
++  let first = null
++  let second = null
++  try {
++    first = await startHost()
++    current = first
++    const firstPid = first.child.pid
++    const firstPort = first.port
++    console.log(`   第一次启动：${first.url}`)
++    const skill = await upsert(first.base, 'skills', {
++      name: `${STAMP}-skill`,
++      description: '重启后应仍在',
++      content: '# J02\nrestart persistence',
++    })
++    const plugin = await upsert(first.base, 'plugins', {
++      name: `${STAMP}-plugin`,
++      version: '1.0.0',
++      source: 'J02',
++      audit: '重启后应仍在',
++      installCommand: '',
++    })
++    const handoff = await call(first.base, 'handoff/create', {
++      method: 'POST',
++      body: { title: `${STAMP}-handoff`, brief: '重启后状态应仍为 doing', target: 'J02', owner: 'J02' },
++    })
++    if (!handoff.ok) throw new Error(`handoff/create → ${handoff.status} ${handoff.data?.error}`)
++    created.handoffId = handoff.data.id
++    const claim = await call(first.base, 'handoff/claim', {
++      method: 'POST', body: { id: created.handoffId, by: 'J02' },
++    })
++    if (!claim.ok) throw new Error(`handoff/claim → ${claim.status} ${claim.data?.error}`)
++    const localBefore = await call(first.base, 'local-state?plugins=dsh-team-space')
++    const installedBefore = localBefore.data?.plugins?.['dsh-team-space']
++    const beforeList = await call(first.base, 'list')
++    const beforeCounts = beforeList.data?.tables && Object.fromEntries(Object.entries(beforeList.data.tables).map(([key, rows]) => [key, rows.length]))
++    ok('J02 重启前已写入技能、插件、委托（doing）',
++      Boolean(skill.id && plugin.id && created.handoffId),
++      JSON.stringify({ skill: skill.id, plugin: plugin.id, handoff: created.handoffId }))
++
++    await stopHost(first)
++    ok('J02 第一个 DSH 进程已经退出', first.child.exitCode !== null || first.child.killed)
++    first = null
++
++    second = await startHost()
++    current = second
++    console.log(`   重启后：${second.url}`)
++    ok('J02 重启后是新进程、新端口',
++      second.child.pid !== firstPid && second.port > 0 && second.port !== firstPort,
++      JSON.stringify({ firstPid, secondPid: second.child.pid, firstPort, secondPort: second.port }))
++
++    const afterList = await call(second.base, 'list')
++    const afterCounts = afterList.data?.tables && Object.fromEntries(Object.entries(afterList.data.tables).map(([key, rows]) => [key, rows.length]))
++    ok('J02 重启后各表条数一致，没有丢数据',
++      JSON.stringify(afterCounts) === JSON.stringify(beforeCounts),
++      JSON.stringify({ beforeCounts, afterCounts }))
++    const skillAfter = await call(second.base, `detail?table=skills&id=${encodeURIComponent(skill.id)}`)
++    const pluginAfter = await call(second.base, `detail?table=plugins&id=${encodeURIComponent(plugin.id)}`)
++    const handoffAfter = await call(second.base, `detail?table=handoffs&id=${encodeURIComponent(created.handoffId)}`)
++    ok('J02 技能正文与描述完整保留',
++      skillAfter.data?.entry?.content === skill.content && skillAfter.data?.entry?.description === skill.description)
++    ok('J02 插件条目完整保留', pluginAfter.data?.entry?.version === '1.0.0')
++    ok('J02 委托状态 doing 与认领人保留',
++      handoffAfter.data?.entry?.status === 'doing' && handoffAfter.data?.entry?.assignee === 'J02',
++      JSON.stringify({ status: handoffAfter.data?.entry?.status, assignee: handoffAfter.data?.entry?.assignee }))
++    const localAfter = await call(second.base, 'local-state?plugins=dsh-team-space')
++    const installedAfter = localAfter.data?.plugins?.['dsh-team-space']
++    ok('J02 本机安装记录（版本 / link 状态）没有丢',
++      installedAfter?.installedVersion === installedBefore?.installedVersion
++        && installedAfter?.installedLink === installedBefore?.installedLink,
++      JSON.stringify({ installedBefore, installedAfter }))
++  } finally {
++    if (current) await cleanup(current)
++    if (first) await stopHost(first)
++    if (second) await stopHost(second)
++  }
++  console.log(`\n结果：${checks - failures}/${checks} 通过${failures ? `，${failures} 条失败` : '，全部通过'}\n`)
++  process.exit(failures ? 1 : 0)
++}
++
++main().catch(error => {
++  console.error('\nJ02 中断：', error.stack || error.message, '\n')
++  cleanup(current).finally(() => process.exit(1))
++})
+diff --git a/dev/e2e-ui.cjs b/dev/e2e-ui.cjs
+new file mode 100644
+index 0000000..1cf3551
+--- /dev/null
++++ b/dev/e2e-ui.cjs
+@@ -0,0 +1,508 @@
++#!/usr/bin/env node
++/**
++ * H01–H16 浏览器交互回归。
++ *
++ * 依赖 Playwright（仓库本身不引入运行时依赖）：
++ *   npm i --no-save playwright
++ *   NODE_PATH="$PWD/node_modules" node dev/e2e-ui.cjs --url=http://127.0.0.1:<port>/?token=...
++ *
++ * 写操作全部走 test 通道，并创建带随机 stamp 的临时记录；结束（含失败）时清理。
++ */
++const { chromium } = require('playwright')
++const { mkdirSync } = require('node:fs')
++const { join, resolve } = require('node:path')
++
++const arg = name => process.argv.find(item => item.startsWith(`--${name}=`))?.slice(name.length + 3) ?? ''
++const URL_ARG = arg('url')
++const SHOTS = resolve(arg('shots') || join(__dirname, '..', 'docs', 'images'))
++if (!URL_ARG) {
++  console.error('用法：node dev/e2e-ui.cjs --url=http://127.0.0.1:<port>/?token=...')
++  process.exit(2)
++}
++
++const parsed = new URL(URL_ARG)
++const ORIGIN = parsed.origin
++const API = `${ORIGIN}/api/team-space`
++const STAMP = `ui-${Date.now().toString(36)}`
++const TEST = { 'x-team-space-channel': 'test', accept: 'application/json' }
++
++let checks = 0
++let failures = 0
++const seeded = []
++const createdNames = []
++
++function ok(name, cond, detail = '') {
++  checks += 1
++  console.log(`${cond ? '  ✓' : '  ✗'} ${name}${cond ? '' : ` — ${detail}`}`)
++  if (!cond) failures += 1
++}
++
++async function api(path, { method = 'GET', body, channel = 'test' } = {}) {
++  const response = await fetch(`${API}/${path}`, {
++    method,
++    headers: {
++      accept: 'application/json',
++      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
++      ...(channel === 'test' ? TEST : {}),
++    },
++    body: body === undefined ? undefined : JSON.stringify(body),
++  })
++  const text = await response.text()
++  let data = null
++  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
++  if (!response.ok || data?.ok === false) {
++    throw new Error(`${path} → HTTP ${response.status} ${data?.error ?? text.slice(0, 160)}`)
++  }
++  return data
++}
++
++async function seed(table, entry) {
++  const data = await api('entry/upsert', { method: 'POST', body: { table, entry } })
++  seeded.push({ table, id: data.entry.id })
++  return data.entry
++}
++
++async function cleanup() {
++  const list = await api('list').catch(() => null)
++  const rows = Object.entries(list?.tables ?? {}).flatMap(([table, items]) => (items ?? []).map(item => ({ table, item })))
++    .filter(({ table, item }) => {
++      if (seeded.some(entry => entry.table === table && entry.id === item.id)) return true
++      const hay = [item.name, item.title, item.url, item.description].filter(Boolean).join(' ')
++      return hay.includes(STAMP)
++    })
++  for (const { table, item } of rows) {
++    await api('entry/remove', { method: 'POST', body: { table, id: item.id } }).catch(() => null)
++  }
++  if (createdNames.length) {
++    const after = await api('list').catch(() => null)
++    for (const name of createdNames) {
++      const item = (after?.tables?.repos ?? []).find(row => row.name === name)
++      if (item) await api('entry/remove', { method: 'POST', body: { table: 'repos', id: item.id } }).catch(() => null)
++    }
++  }
++}
++
++async function shot(page, name) {
++  await page.waitForTimeout(120)
++  await page.screenshot({ path: join(SHOTS, name), fullPage: true })
++}
++
++async function gotoApp(page, { name = 'Xinzhan', channel = 'prod' } = {}) {
++  await page.goto(URL_ARG, { waitUntil: 'domcontentloaded', timeout: 30_000 })
++  await page.waitForTimeout(1800)
++  await page.evaluate(({ name, channel }) => {
++    localStorage.setItem('team-space:name', name)
++    if (channel === 'test') localStorage.setItem('team-space:channel', 'test')
++    else localStorage.removeItem('team-space:channel')
++  }, { name, channel })
++  await page.reload({ waitUntil: 'domcontentloaded' })
++  await page.waitForTimeout(1800)
++}
++
++async function openTeam(page) {
++  await page.locator('.ts-nav-text').click()
++  await page.locator('.ts-root').waitFor({ state: 'visible', timeout: 10_000 })
++  await page.waitForTimeout(500)
++}
++
++async function clickTab(page, label) {
++  await page.locator('.ts-tab').filter({ hasText: label }).click()
++  await page.waitForTimeout(350)
++}
++
++async function cardNamed(page, name) {
++  return page.locator('.ts-session').filter({ hasText: name }).first()
++}
++
++async function main() {
++  mkdirSync(SHOTS, { recursive: true })
++  console.log(`\nH 组 UI 回归 · ${ORIGIN} · ${STAMP}\n`)
++
++  const channelSkill = await seed('skills', {
++    name: `${STAMP}-channel`,
++    description: 'H03/H04 测通道计数',
++    content: '# channel fixture',
++  })
++  const freshPlugin = await seed('plugins', {
++    name: `${STAMP}-fresh-plugin`,
++    version: '1.0.0',
++    source: 'H12 fixture',
++    audit: '仅测试数据',
++    installCommand: '',
++  })
++  const updatePlugin = await seed('plugins', {
++    name: 'dsh-tool-app-verify',
++    version: '9.9.9',
++    source: 'H12 fixture',
++    audit: '本机已安装旧版，预期显示更新',
++    installCommand: '',
++  })
++  const deleteLink = await seed('repos', {
++    name: `${STAMP}-删除确认`,
++    url: `https://example.feishu.cn/docx/${STAMP}-delete`,
++    description: `H13 fixture ${STAMP}`,
++    type: 'doc',
++  })
++  const conflictLink = await seed('repos', {
++    name: `${STAMP}-冲突接管`,
++    url: `https://example.feishu.cn/docx/${STAMP}-conflict`,
++    description: `H14 fixture ${STAMP}`,
++    type: 'doc',
++  })
++  const searchLink = await seed('repos', {
++    name: `NAME-${STAMP}`,
++    url: `https://example.feishu.cn/docx/URL-${STAMP}`,
++    description: `DESC-${STAMP}`,
++    type: 'doc',
++  })
++
++  const browser = await chromium.launch({ channel: 'chrome', headless: true })
++  try {
++    // H01 / H02：侧栏待认领数 + 数字位置
++    {
++      const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
++      await gotoApp(page, { name: '佳瑛' })
++      const prod = await api('list', { channel: 'prod' })
++      const expected = (prod.tables?.handoffs ?? []).filter(item => item.status === 'open' && item.target === '佳瑛').length
++      await page.waitForFunction(value => {
++        const text = document.querySelector('.ts-nav-text')?.innerText ?? ''
++        return value > 0 ? text.includes(`（${value}）`) : !text.includes('（')
++      }, expected, { timeout: 12_000 }).catch(() => null)
++      const navText = await page.locator('.ts-nav-text').innerText()
++      ok('H01 侧栏显示「团队空间（N）」，N 与可见 open 委托一致',
++        expected > 0 ? navText.includes(`（${expected}）`) : !navText.includes('（'),
++        `expected=${expected} actual=${JSON.stringify(navText)}`)
++      const positions = await page.locator('.ts-nav-text').evaluate(node => {
++        const textNode = [...node.childNodes].find(child => child.nodeType === Node.TEXT_NODE && child.textContent.includes('团队空间'))
++        const range = document.createRange()
++        range.selectNodeContents(textNode)
++        const textRect = range.getBoundingClientRect()
++        const count = node.querySelector('.ts-nav-count')
++        const countRect = count?.getBoundingClientRect()
++        return { textRight: textRect.right, countLeft: countRect?.left ?? null, order: count ? [...node.childNodes].indexOf(count) : -1 }
++      })
++      ok('H02 数字在文字之后，不在前面',
++        positions.countLeft === null || (positions.countLeft >= positions.textRight - 1 && positions.order > 0),
++        JSON.stringify(positions))
++      await shot(page, 'ui-H01-H02-nav-count.png')
++      await page.close()
++    }
++
++    const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
++    await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
++    await gotoApp(page, { name: 'Xinzhan', channel: 'prod' })
++    await openTeam(page)
++
++    // H03 / H04：切测试通道，徽标出现且列表不用刷新立即变
++    {
++      await page.evaluate(() => { window.__h04Sentinel = 'alive' })
++      await clickTab(page, 'SKILL')
++      const before = Number((await page.locator('.ts-tab').filter({ hasText: 'SKILL' }).locator('.ts-count').innerText()).trim())
++      const expectedAfter = (await api('list')).tables.skills.length
++      await page.getByRole('button', { name: '我的资料' }).click()
++      await page.locator('.ts-channel-btn').click()
++      await page.locator('.ts-channel-pill').waitFor({ state: 'visible', timeout: 4000 })
++      await page.waitForFunction(expected => {
++        const tab = [...document.querySelectorAll('.ts-tab')].find(node => node.innerText.includes('SKILL'))
++        return Number(tab?.querySelector('.ts-count')?.textContent ?? -1) === expected
++      }, expectedAfter, { timeout: 5000 }).catch(() => null)
++      const after = Number((await page.locator('.ts-tab').filter({ hasText: 'SKILL' }).locator('.ts-count').innerText()).trim())
++      const pill = page.locator('.ts-channel-pill')
++      const style = await pill.evaluate(node => {
++        const computed = getComputedStyle(node)
++        return { background: computed.backgroundColor, color: computed.color, visible: computed.display !== 'none' }
++      })
++      ok('H03 切到测试通道后出现橙色通道徽标', await pill.isVisible() && style.background !== 'rgba(0, 0, 0, 0)', JSON.stringify(style))
++      ok('H04 通道切换后列表立即刷新（计数等于 test 视图，无需手动刷新）',
++        after === expectedAfter && after > before, `prod ${before} → test ${after}（期望 ${expectedAfter}）`)
++      ok('H04 切换过程没有整页刷新', await page.evaluate(() => window.__h04Sentinel) === 'alive')
++      ok('H04 测试记录已出现在测试通道列表中', (await page.locator('.ts-root').innerText()).includes(channelSkill.name))
++      await shot(page, 'ui-H03-H04-channel.png')
++    }
++
++    // H05 / H06 / H07：添加链接只填两项、弹窗、保存后即刻可见、顺序正确
++    {
++      const linkName = `${STAMP}-ui-added`
++      createdNames.push(linkName)
++      await clickTab(page, '链接')
++      const chipsBefore = await page.locator('.ts-subbar .ts-subchip').allTextContents()
++      ok('H07 链接子表按「文档在最前、+ 在最后」排列',
++        chipsBefore[0]?.includes('文档') && chipsBefore[chipsBefore.length - 1]?.trim() === '+',
++        JSON.stringify(chipsBefore))
++      await page.locator('.ts-subchip-add').click()
++      const modal = page.locator('.ts-entry-modal')
++      await modal.waitFor({ state: 'visible' })
++      const labels = await modal.locator('.ts-label').allTextContents()
++      const inputCount = await modal.locator('input').count()
++      const textareaCount = await modal.locator('textarea').count()
++      ok('H05 添加链接使用弹窗，且只填名称 + 链接两个字段',
++        (await modal.getAttribute('role')) === 'dialog' && inputCount === 2 && textareaCount === 0
++          && labels.some(text => text.includes('名称')) && labels.some(text => text.includes('链接')),
++        JSON.stringify({ labels, inputCount, textareaCount }))
++      await modal.locator('input').nth(0).fill(linkName)
++      await modal.locator('input').nth(1).fill(`https://example.feishu.cn/docx/${STAMP}-ui-added`)
++      await shot(page, 'ui-H05-add-link-dialog.png')
++      await page.evaluate(() => { window.__h06Sentinel = 'alive' })
++      await modal.getByRole('button', { name: '保存', exact: true }).click()
++      await modal.waitFor({ state: 'hidden', timeout: 8000 })
++      const createdCard = await cardNamed(page, linkName)
++      await createdCard.waitFor({ state: 'visible', timeout: 8000 })
++      ok('H06 保存后链接立即可见，无需刷新页面',
++        await createdCard.isVisible() && await page.evaluate(() => window.__h06Sentinel) === 'alive')
++      const newDetail = (await api('list')).tables.repos.find(item => item.name === linkName)
++      ok('H06 保存结果已真实落库（test 通道）', Boolean(newDetail), JSON.stringify(newDetail ?? {}))
++      const chipsAfter = await page.locator('.ts-subbar .ts-subchip').allTextContents()
++      ok('H07 新增文档后仍保持「文档在最前、+ 在最后」',
++        chipsAfter[0]?.includes('文档') && chipsAfter[chipsAfter.length - 1]?.trim() === '+',
++        JSON.stringify(chipsAfter))
++      await shot(page, 'ui-H06-H07-created-link.png')
++    }
++
++    // H08：只读门户没有新增入口
++    {
++      const portal = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
++      await portal.goto(`${API}/portal`, { waitUntil: 'domcontentloaded' })
++      await portal.waitForTimeout(1200)
++      const body = await portal.locator('body').innerText()
++      const addButtons = await portal.locator('.subchip-add, [aria-label*="新增"], button').evaluateAll(nodes =>
++        nodes.filter(node => /新增|添加|编辑|删除|保存/.test(node.innerText)).length)
++      ok('H08 只读门户不出现新增 / 编辑 / 删除入口',
++        body.includes('只读门户') && addButtons === 0 && !(await portal.locator('.subchip-add').count()),
++        `offenders=${addButtons}`)
++      await shot(portal, 'ui-H08-portal.png')
++      await portal.close()
++    }
++
++    // H09 / H10：@ 菜单排序、成员/链接/技能齐全、选成员插入模板
++    {
++      const atPage = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
++      await atPage.goto(URL_ARG, { waitUntil: 'domcontentloaded' })
++      await atPage.waitForTimeout(2200)
++      const editor = atPage.locator('[contenteditable="true"]').first()
++      const clearEditor = async () => {
++        await editor.click()
++        await atPage.keyboard.press('Meta+A')
++        await atPage.keyboard.press('Backspace')
++      }
++      await clearEditor()
++      await editor.type('@', { delay: 120 })
++      const listbox = atPage.locator('[role="listbox"]').first()
++      await listbox.waitFor({ state: 'visible', timeout: 6000 })
++      const broad = await listbox.innerText()
++      const hasMember = broad.includes('团队空间 · 成员') && broad.includes('Neo')
++      const hasLink = broad.includes('团队空间 · 链接') && broad.includes('launcher2')
++      await clearEditor()
++      await editor.type('@oi', { delay: 80 })
++      await atPage.waitForTimeout(700)
++      const skillMenu = await atPage.locator('[role="listbox"]').first().innerText()
++      const hasSkill = skillMenu.includes('团队空间 · 技能') && /oi-[a-z-]+/.test(skillMenu)
++      ok('H09 @ 菜单同时包含成员、链接、技能三组',
++        hasMember && hasLink && hasSkill,
++        JSON.stringify({ hasMember, hasLink, hasSkill, broad: broad.slice(0, 500), skillMenu: skillMenu.slice(0, 500) }))
++      await shot(atPage, 'ui-H09-at-menu.png')
++      await clearEditor()
++      await editor.type('@launcher2', { delay: 80 })
++      await atPage.waitForTimeout(700)
++      const exactRows = await atPage.locator('[role="listbox"] button[role="option"] ._3e4SsG_itemName').allTextContents()
++      ok('H09 精确名排在前缀名之前（launcher2 > launcher2-web3d）',
++        exactRows[0] === 'launcher2' && exactRows.indexOf('launcher2-web3d') > 0,
++        JSON.stringify(exactRows.slice(0, 6)))
++      await clearEditor()
++      await editor.type('@showcar', { delay: 60 })
++      await atPage.waitForTimeout(700)
++      const names = await atPage.locator('[role="listbox"] button[role="option"] ._3e4SsG_itemName').allTextContents()
++      const prefixLast = Math.max(...['showcar-adas', 'showcar-theme', 'ShowCar RoadMap', 'showcar-devices', 'showcar-virtualdisplay']
++        .map(name => names.indexOf(name)).filter(index => index >= 0))
++      const contains = names.indexOf('txz-showcar-app')
++      ok('H09 名字前缀排在名字包含之前（showcar-* > txz-showcar-app）',
++        prefixLast >= 0 && contains > prefixLast,
++        JSON.stringify({ prefixLast, contains, names: names.slice(0, 12) }))
++      await clearEditor()
++      await editor.type('@Neo', { delay: 80 })
++      await atPage.waitForTimeout(700)
++      const neo = atPage.locator('[role="listbox"] button[role="option"]').filter({ hasText: 'Neo' }).first()
++      await neo.click()
++      await atPage.waitForTimeout(350)
++      const inserted = await editor.innerText()
++      ok('H10 选成员后插入「给「X」派一个委托，事项：」模板',
++        inserted.includes('给「Neo」派一个委托，事项：'), JSON.stringify(inserted.slice(0, 160)))
++      await shot(atPage, 'ui-H10-insert-member.png')
++      await atPage.close()
++    }
++
++    // 回到团队空间页签（atPage 是另一个页面，当前 page 仍停在链接页签）
++    await clickTab(page, '链接')
++
++    // H11：不同长度 toast 的中心点不漂移
++    {
++      await page.getByRole('button', { name: '我的资料' }).click()
++      await page.getByRole('button', { name: /复制 Codex MCP 配置/ }).click()
++      const toast = page.locator('.ts-toast').first()
++      await toast.waitFor({ state: 'visible', timeout: 4000 })
++      const first = await toast.evaluate(node => {
++        const rect = node.getBoundingClientRect()
++        return { center: rect.left + rect.width / 2, text: node.innerText }
++      })
++      await shot(page, 'ui-H11-toast-long.png')
++      await page.waitForTimeout(2300)
++      await page.getByRole('button', { name: '我的资料' }).click().catch(() => null)
++      await page.getByRole('button', { name: '我的资料' }).click().catch(() => null)
++      await page.getByRole('button', { name: '复制域名' }).click()
++      await toast.waitFor({ state: 'visible', timeout: 4000 })
++      const second = await toast.evaluate(node => {
++        const rect = node.getBoundingClientRect()
++        return { center: rect.left + rect.width / 2, text: node.innerText }
++      })
++      ok('H11 多次 toast 的中心点不漂移',
++        Math.abs(first.center - second.center) <= 1 && first.text !== second.text,
++        JSON.stringify({ first, second }))
++    }
++
++    // H12：当前插件 / 更新 / 安装 三态
++    {
++      await clickTab(page, '插件')
++      const stateOf = async name => {
++        const card = await cardNamed(page, name)
++        return (await card.locator('button.ts-btn[data-primary="true"]').innerText()).trim()
++      }
++      const states = {
++        self: await stateOf('dsh-team-space'),
++        update: await stateOf('dsh-tool-app-verify'),
++        install: await stateOf(freshPlugin.name),
++      }
++      ok('H12 插件安装按钮三态正确（当前插件 / 更新 / 安装）',
++        states.self === '当前插件' && states.update === '更新' && states.install === '安装',
++        JSON.stringify(states))
++      await shot(page, 'ui-H12-plugin-states.png')
++    }
++
++    // H13：删除二次确认，取消不删
++    {
++      await clickTab(page, '链接')
++      const card = await cardNamed(page, deleteLink.name)
++      await card.getByRole('button', { name: '更多操作' }).click()
++      await page.locator('.ts-menu').getByRole('menuitem', { name: '删除', exact: true }).click()
++      const dialog = page.locator('.ts-modal[role="dialog"]').filter({ hasText: '删除' }).last()
++      await dialog.waitFor({ state: 'visible' })
++      ok('H13 删除前有二次确认弹窗', (await dialog.innerText()).includes(`删除「${deleteLink.name}」？`))
++      await shot(page, 'ui-H13-delete-confirm.png')
++      await dialog.getByRole('button', { name: '取消', exact: true }).click()
++      await dialog.waitFor({ state: 'hidden', timeout: 4000 })
++      const still = await cardNamed(page, deleteLink.name)
++      ok('H13 取消后记录仍在（未删除）', await still.isVisible())
++    }
++
++    // H14：版本冲突提示 + 接管按钮
++    {
++      const card = await cardNamed(page, conflictLink.name)
++      await card.getByRole('button', { name: '更多操作' }).click()
++      await page.locator('.ts-menu').getByRole('menuitem', { name: '编辑', exact: true }).click()
++      const modal = page.locator('.ts-entry-modal')
++      await modal.waitFor({ state: 'visible' })
++      const current = (await api('list')).tables.repos.find(item => item.id === conflictLink.id)
++      await api('entry/upsert', {
++        method: 'POST',
++        body: {
++          table: 'repos',
++          entry: {
++            id: current.id,
++            name: current.name,
++            url: current.url,
++            description: current.description,
++            type: current.type,
++            owner: current.owner,
++            tags: current.tags,
++            branch: current.branch,
++            note: current.note,
++            verifiedAt: current.verifiedAt,
++            baseVersion: current.contentHash,
++            takeOver: true,
++            author: { name: 'H14 另一位测试者' },
++          },
++        },
++      })
++      await modal.locator('button[data-primary="true"]').click()
++      const conflict = page.locator('.ts-conflict').filter({ hasText: '接管' })
++      await conflict.waitFor({ state: 'visible', timeout: 6000 })
++      const conflictText = await conflict.innerText()
++      ok('H14 版本冲突时显示冲突原因与「接管这条记录」按钮',
++        conflictText.includes('接管这条记录') && /发布|更新/.test(conflictText), conflictText.slice(0, 240))
++      await shot(page, 'ui-H14-version-conflict.png')
++      await conflict.getByRole('button', { name: '接管这条记录' }).click()
++      await page.locator('.ts-entry-modal').waitFor({ state: 'hidden', timeout: 6000 })
++      const taken = (await api('list')).tables.repos.find(item => item.id === conflictLink.id)
++      ok('H14 接管后作者切回当前用户，记录没有丢', taken?.author?.name === 'Xinzhan', JSON.stringify(taken?.author))
++    }
++
++    // H15：五张表空状态都有可操作入口（用受控空列表真实渲染 UI）
++    {
++      const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } })
++      await context.route('**/api/team-space/list**', route => route.fulfill({
++        status: 200,
++        contentType: 'application/json',
++        body: JSON.stringify({
++          ok: true,
++          tables: { tasks: [], todos: [], handoffs: [], plugins: [], skills: [], repos: [] },
++          counts: { tasks: 0, todos: 0, handoffs: 0, plugins: 0, skills: 0, repos: 0 },
++          limits: { maxItems: 500 },
++        }),
++      }))
++      const emptyPage = await context.newPage()
++      await emptyPage.goto(URL_ARG, { waitUntil: 'domcontentloaded' })
++      await emptyPage.waitForTimeout(1800)
++      await openTeam(emptyPage)
++      const emptyChecks = []
++      for (const label of ['会话', '委托', '插件', 'SKILL', '链接']) {
++        await clickTab(emptyPage, label)
++        const empty = emptyPage.locator('.ts-empty-box').first()
++        await empty.waitFor({ state: 'visible', timeout: 4000 })
++        const text = await empty.innerText()
++        emptyChecks.push({ label, hasHint: /创建动作|分享到团队空间|重新加载/.test(text), hasAction: await empty.getByRole('button', { name: '重新加载' }).isVisible() })
++      }
++      ok('H15 每张表的空状态都有可操作提示与「重新加载」',
++        emptyChecks.every(item => item.hasHint && item.hasAction), JSON.stringify(emptyChecks))
++      await shot(emptyPage, 'ui-H15-empty-states.png')
++      await context.close()
++    }
++
++    // H16：按名称 / 描述 / URL 搜索，页签计数同步
++    {
++      await clickTab(page, '链接')
++      const search = page.locator('.ts-search input')
++      for (const [field, needle] of [['标题', `NAME-${STAMP}`], ['描述', `DESC-${STAMP}`], ['URL', `URL-${STAMP}`]]) {
++        await search.fill(needle)
++        await page.waitForTimeout(400)
++        const cards = await page.locator('.ts-session').count()
++        const counts = await page.locator('.ts-tab').evaluateAll(nodes => nodes.map(node => ({
++          label: node.querySelector('.ts-tab-label')?.textContent,
++          count: Number(node.querySelector('.ts-count')?.textContent ?? -1),
++        })))
++        const reposCount = counts.find(item => item.label === '链接')?.count
++        const othersZero = counts.filter(item => item.label !== '链接').every(item => item.count === 0)
++        ok(`H16 按${field}过滤命中 1 条，页签计数同步`, cards === 1 && reposCount === 1 && othersZero,
++          JSON.stringify({ cards, counts }))
++      }
++      ok('H16 搜索命中卡片是正确的测试链接',
++        (await page.locator('.ts-session').first().innerText()).includes(searchLink.name))
++      await shot(page, 'ui-H16-search.png')
++      await search.fill('')
++    }
++
++    await page.close()
++  } finally {
++    await browser.close().catch(() => null)
++    await cleanup().catch(error => console.log(`  ! 清理失败：${error.message}`))
++    const residual = await api('list').then(data => Object.entries(data.tables ?? {})
++      .flatMap(([table, items]) => (items ?? []).map(item => ({ table, item })))
++      .filter(({ item }) => [item.name, item.title, item.url].filter(Boolean).join(' ').includes(STAMP))).catch(() => [])
++    ok('UI 测试无残留', residual.length === 0, JSON.stringify(residual.map(({ table, item }) => ({ table, name: item.name, title: item.title }))))
++  }
++
++  console.log(`\n结果：${checks - failures}/${checks} 通过${failures ? `，${failures} 条失败` : '，全部通过'}\n`)
++  process.exit(failures ? 1 : 0)
++}
++
++main().catch(error => {
++  console.error('\nUI 回归中断：', error.stack || error.message, '\n')
++  cleanup().finally(() => process.exit(1))
++})
+diff --git "a/docs/\346\265\213\350\257\225\346\226\271\346\241\210-\345\205\250\351\207\217.md" "b/docs/\346\265\213\350\257\225\346\226\271\346\241\210-\345\205\250\351\207\217.md"
+new file mode 100644
+index 0000000..c769994
+--- /dev/null
++++ "b/docs/\346\265\213\350\257\225\346\226\271\346\241\210-\345\205\250\351\207\217.md"
+@@ -0,0 +1,412 @@
++# 团队空间 · 全量测试方案
++
++> 版本基线 2.7.86 · 2026-10-24 · 状态：**已评审，已执行**
++>
++> **执行状态（2026-10-24）**：本轮共 **364 项检查点全绿**（本机 326 + Neo 38）。H 组 16/16、J 组 9/9；Neo 成员端 / 门店端 `17/17 ×2`，J09 门店端持久性 4/4。I09 按需求跳过（佳瑛机器不测，成员视角由 Neo 覆盖）。记录见 `docs/测试执行记录-2026-10-24.md`。
++
++---
++
++## 0. 一句话
++
++现有自检覆盖 144 条断言，但 **40 条路由里有 15 条一次都没被调用过**，另有 `install-plugin` / `plugin/enable` 只打过失败分支；**7 个 agent 工具运行时零覆盖，9 个 MCP 工具中只有 1 个被真实调用过**。本次方案把测试从「按接口逐个打」改成「按能力 × 入口交叉验」，重点补上**同一个功能有多条实现路径**这一类漏测。
++
++---
++
++## 1. 为什么要做（本次漏测复盘）
++
++### 1.1 漏了什么
++
++我给佳瑛派委托，企微群没收到通知。根因：**建委托有两条代码路径，只有一条发了通知**。
++
++| 路径                                   | 实现                     | 发通知      |
++| ------------------------------------ | ---------------------- | -------- |
++| 浏览器点「发起委托」                           | `POST /handoff/create` | ✅        |
++| agent 工具 `team_space_create_handoff` | 宿主内直接写 store           | ❌ **漏了** |
++
++而我的自检只打 HTTP 路由，**从来没有真的执行过 agent 工具**，所以这条路径一直是盲区。
++
++### 1.2 根因不是「少写了一个断言」，是测试组织方式错了
++
++| 问题                    | 表现                                                                                     |
++| --------------------- | -------------------------------------------------------------------------------------- |
++| **按接口组织，而不是按能力组织**    | 测了 `/handoff/create` 就以为「建委托」测过了，其实只测了 1/3                                             |
++| **只验证「有没有」，不验证「副作用」** | 通知是副作用，不在返回体里，静态断言看不见                                                                  |
++| **同名工具两套实现**          | `create_handoff` / `complete_handoff` / `list_members` 三个工具，agent 侧和 MCP 侧各写了一遍，逻辑各自演化 |
++| **只站在发布者本机看**         | 历史上一半以上的坑（isSelf、installedLink、local-state）都是成员端才暴露，但测试一直在发布者机器上跑                      |
++
++### 1.3 现有测试的真实覆盖（实测数据）
++
++| 项             | 数量     | 说明                                                                 |
++| ------------- | ------ | ------------------------------------------------------------------ |
++| HTTP 路由总数     | **40** | `lib/index.js`                                                     |
++| 自检打过的路由       | 25     | 含 `client-log` / `self-config` / `/mcp`；其中 2 条只打了失败分支          |
++| **从没打过的路由**   | **15** | 见下                                                                 |
++| agent 工具（宿主内） | 7      | 只有「工具↔处理器一一对应」这类静态断言，**运行时零覆盖**                                    |
++| MCP 工具        | 9      | 握手 + tools/list + 1 条 `list_skills` 已真调用，其余 8 条零覆盖              |
++| 两个工具的代码交集     | 3      | `create_handoff` / `complete_handoff` / `list_members` —— 三条都是两套实现 |
++
++**15 条零覆盖路由**（另：`install-plugin` / `plugin/enable` 只覆盖了拒绝分支，没有成功路径）：
++
++```
++detail  download  export-codex-skill  guide  handoff/consume
++install  install-skill  lan-link  local-session  mcp/config
++member/save  new-session  portal  receipt  share
++```
++
++其中 **`install-plugin` / `plugin/enable` / `install-skill` 整条安装链路没有一次成功端到端跑过** —— 这是用户每天在点的按钮。
++
++---
++
++## 2. 测试范围
++
++### 2.1 被测对象
++
++| 对象        | 形态                                 | 测试手段                        |
++| --------- | ---------------------------------- | --------------------------- |
++| 宿主半       | `lib/index.js`（40 路由 + 7 agent 工具） | mock 宿主 / 真实宿主 HTTP / 直接调工具 |
++| 浏览器半      | `lib/client.js`                    | 真实客户端点击                     |
++| 独立门户      | `lib/portal.html`                  | headless 浏览器截图 + DOM 断言     |
++| MCP stdio | `dev/mcp-server.mjs`               | 起进程发 JSON-RPC               |
++| MCP HTTP  | `POST /api/team-space/mcp`         | curl 发 JSON-RPC             |
++| 安装/升级     | 两段式安装 + release.sh                 | 临时 DSH_HOME 真装              |
++
++### 2.2 功能清单与入口矩阵
++
++> **这张表是本方案的核心**：每一行代表一条「能力」，后面的路径**必须逐条覆盖**，不能只测一条就宣布通过。
++
++| #  | 能力        | 入口路径                                                                                            | 路径数          |
++| -- | --------- | ----------------------------------------------------------------------------------------------- | ------------ |
++| 1  | 分享会话      | `/share`、`/share/submit`、客户端「分享到团队空间」                                                           | 3            |
++| 2  | 认领会话      | `/claim`→`/import-session`→`/claim/commit`、客户端「认领」                                              | 2（跨设备/本机两分支） |
++| 3  | 交接回执      | `/receipt`、`/receipt/submit`、`/local-session`                                                   | 3            |
++| 4  | **创建委托**  | `/handoff/create`、agent 工具、MCP 工具                                                               | **3**        |
++| 5  | 认领委托      | `/handoff/claim`、客户端、MCP `claim_handoff`                                                        | 3            |
++| 6  | 交回结果      | `/handoff/complete`、agent 工具、MCP 工具                                                             | **3**        |
++| 7  | 取消 / 删除委托 | `/handoff/cancel`、`/handoff/remove`、客户端                                                         | 3            |
++| 8  | 委托投递标记    | `/handoff/consume`                                                                              | 1            |
++| 9  | 登记待办      | `/entry/upsert`、agent 工具 `add_todo`                                                             | 2            |
++| 10 | 登记技能      | `/entry/upsert`、agent 工具 `share_skill`、客户端表单                                                    | 3            |
++| 11 | 登记插件      | `/entry/upsert`、agent 工具 `share_plugin`、客户端表单                                                   | 3            |
++| 12 | 登记链接      | `/entry/upsert`、agent 工具 `share_repo`、客户端「+」表单                                                  | 3            |
++| 13 | 读条目详情     | `/detail`、客户端展开、门户展开、MCP `get_skill`                                                            | 4            |
++| 14 | 删除条目      | `/entry/remove`、`/remove`、客户端删除                                                                 | 3            |
++| 15 | 安装插件      | `/install-plugin`→`/plugin/enable`、`/install`、客户端按钮、MCP 指令                                      | 4            |
++| 16 | 安装技能      | `/install-skill`、客户端「安装」按钮                                                                      | 2            |
++| 17 | 成员与设备     | `/join`、`/gateway-status`、`/member/save`、`/member/list`、agent `list_members`、MCP `list_members` | 6            |
++| 18 | 数据通道      | header `x-team-space-channel`、query `?channel=`、客户端开关、门户链接、MCP 环境变量                             | 5            |
++| 19 | 版本与升级     | 清单 `/list`、`/download`、客户端更新按钮、`release.sh`                                                     | 4            |
++| 20 | 门户页       | `/portal`、`/guide`、深链 `#tab` / `?tab=`                                                          | 3            |
++
++**矩阵里「路径数 ≥ 3」的共 16 条能力**，这些是本次测试的重心。
++
++### 2.3 明确不测
++
++| 不测                   | 原因                        |
++| -------------------- | ------------------------- |
++| 公网访问、多租户、账号体系        | 不在产品范围（README 已声明）        |
++| 身份防冒充                | 设计如此：deviceId 由客户端自报，没有认证 |
++| 企业微信智能机器人（WebSocket） | 依赖第三方长连接 SDK，插件零依赖原则排除    |
++| 数据量超 500 条的淘汰行为      | 只验边界报错，不验长期淘汰策略           |
++| 跨操作系统（Windows/Linux） | 团队是 macOS                 |
++
++---
++
++## 3. 测试策略
++
++### 3.1 七层，从便宜到贵
++
++| 层               | 测什么                        | 手段                    | 特点                         |
++| --------------- | -------------------------- | --------------------- | -------------------------- |
++| **L1 静态契约**     | 工具↔处理器一一对应；路由↔调用方；多路径代码对齐  | 源码断言                  | 秒级，但只能发现「结构缺了」             |
++| **L2 接口行为**     | 每条路由的入参/出参/错误码             | mock 宿主 HTTP          | 快，用临时 DSH_HOME，**碰不到真实数据** |
++| **L3 多路径一致性** ⭐ | 同一能力的 N 条入口，**返回值和副作用都一致** | 三条路径各跑一遍，对比结果         | **本次新增，专治这次的漏测**           |
++| **L4 跨端一致性**    | 三端看同一份数据是否一致               | 客户端 / 门户 / MCP 各查一次对比 | 需要真实数据                     |
++| **L5 通道隔离**     | prod / test 互不污染           | 双通道对打                 | 已具备，本次补齐用例                 |
++| **L6 UI 行为**    | 点击、弹窗、徽标、toast、刷新时机        | 真实客户端 + headless 截图   | 贵，且需要人眼看                   |
++| **L7 安装/升级**    | 真下载、真解压、真落盘、真生效            | 临时 DSH_HOME 端到端       | 贵，但用户每天都点                  |
++
++### 3.2 两条铁律
++
++**铁律一：一条能力，所有入口都要跑，并且比对结果。**
++
++不比对就不算测过。比如「建委托」，三条路径各建一条，然后断言：
++
++- 三条记录字段相同（除 id / 时间戳）
++- **企微通知各发一次**（这是副作用，必须单独断言）
++- 三条都能被 `/list` 看到、都能被认领
++
++**铁律二：副作用分开验。**
++
++返回值对 ≠ 功能对。必须单独验的副作用清单：
++
++| 副作用  | 怎么验                                          |
++| ---- | -------------------------------------------- |
++| 企微通知 | 把 webhook 临时指向一个假地址，看宿主日志有没有发出记录（真发/真不发都能区分） |
++| 文件落盘 | 装完 `ls` 目标目录                                 |
++| 配置写入 | 读 `package.json` / `cordis.patch.yml`        |
++| 备份   | `ls *.bak-*`                                 |
++| 通道标记 | 直接读 `~/.dsh/storages/team-space.json`        |
++
++### 3.3 数据纪律
++
++| 规则           | 做法                                    |
++| ------------ | ------------------------------------- |
++| **不污染真实数据**  | 除非该用例本身在验真实数据，否则一律走 `test` 通道         |
++| **mock 优先**  | 能进 mock 宿主的用例不进真实宿主                   |
++| **跨机器用例集中跑** | Neo 机器只跑需要成员视角的用例，避免反复重启他             |
++| **每条用例自带清理** | 失败也要清（用 `try/finally`），否则脏数据会掩盖后续问题   |
++| **跑完核对总数**   | 每轮结束断言 `channel=test` 残留 = 0，真实数据条数不变 |
++
++---
++
++## 4. 用例清单（137 条）
++
++优先级：**P0 = 阻断级，不过就不能发版**；P1 = 重要；P2 = 体验类。
++
++### A. 会话分享与认领（14 条）
++
++| ID  | 场景               | 入口                              | 预期                                     | P  |
++| --- | ---------------- | ------------------------------- | -------------------------------------- | -- |
++| A01 | 分享会话（主服务器直读）     | `POST /share`                   | 落 tasks 表，返回 id                        | P1 |
++| A02 | 分享会话（成员提交快照）     | `POST /share/submit`            | 落 tasks 表，含正文快照                        | P1 |
++| A03 | 列表能看到刚分享的会话      | `GET /list`                     | tasks 里有它，带 preview                    | P1 |
++| A04 | 跨设备认领（源会话不在主服务器） | `POST /claim`                   | `mode=remote`，**不给 sessionId**，只给快照    | P0 |
++| A05 | 跨设备建出会话          | `POST /import-session`          | 返回 sessionId，agents.create 被调用，正文进种子事件 | P0 |
++| A06 | 回报副本位置           | `POST /claim/commit`            | 任务里记下 sessionId                        | P1 |
++| A07 | 同设备重复认领          | `POST /claim`                   | 复用副本，`reused=true`                     | P1 |
++| A08 | 换设备认领            | `POST /claim`                   | 不复用，`reused=false`，无 sessionId         | P1 |
++| A09 | 源会话在本机           | `POST /claim`                   | `mode=local`，直接给 sessionId             | P0 |
++| A10 | 源会话在本机但认领人是别人    | `POST /claim`                   | 仍 `mode=remote`，给事件快照（不能给本机路径）         | P0 |
++| A11 | 老客户端不带 hostId    | `POST /claim`                   | 按回环地址回落成 local                         | P1 |
++| A12 | 读本机会话全文          | `GET /local-session`            | 返回完整文本                                 | P1 |
++| A13 | 读本机会话增量          | `GET /local-session?since=N`    | 只返回 afterSeq ≥ N 的部分                   | P1 |
++| A14 | 缺 id / 缺快照       | `POST /claim`、`/import-session` | `400 BAD_REQUEST`                      | P1 |
++
++### B. 委托 F-Assign（20 条）⭐ 重灾区
++
++| ID  | 场景                 | 入口                                         | 预期                                  | P      |
++| --- | ------------------ | ------------------------------------------ | ----------------------------------- | ------ |
++| B01 | 建委托                | `POST /handoff/create`                     | 落 handoffs，`status=open`            | P1     |
++| B02 | 建委托                | **agent 工具** `team_space_create_handoff`   | 同上                                  | P1     |
++| B03 | 建委托                | **MCP 工具**（HTTP 传输）                        | 同上                                  | P1     |
++| B04 | **三条路径结果 + 副作用一致** | 上三条                                        | 字段除 id/时间戳外相同；**各自都发一次企微通知**        | **P0** |
++| B05 | 委托可见性              | `GET /list?deviceId=&name=`                | 指定人的委托：本人 + 发起人 + 主服务器可见，其他人不可见     | P1     |
++| B06 | 认领                 | `POST /handoff/claim`                      | `open → doing`，记 assignee/claimedAt | P0     |
++| B07 | 交回结果               | `POST /handoff/complete`                   | `doing → done`，记 result/completedAt | P0     |
++| B08 | 交回结果               | **agent 工具** `team_space_complete_handoff` | 同上                                  | P0     |
++| B09 | 交回结果               | **MCP 工具** `team_space_complete_handoff`   | 同上                                  | P0     |
++| B10 | 跳状态                | `POST /handoff/complete`（未认领）              | `409 STATE_CONFLICT`                | P0     |
++| B11 | 非指定人认领             | 指定了他人的委托                                   | `403 FORBIDDEN`                     | P1     |
++| B12 | 非执行人交回             | 别人认领后另一人 complete                          | `403 FORBIDDEN`                     | P1     |
++| B13 | 发起人取消              | `POST /handoff/cancel`                     | `open → cancelled`，记 reason         | P1     |
++| B14 | 非发起人取消             | 同上                                         | `403 FORBIDDEN`                     | P1     |
++| B15 | 删除委托               | `POST /handoff/remove`                     | 只有主服务器可删，成员 `403`                   | P0     |
++| B16 | 标记已投递              | `POST /handoff/consume`                    | 写 deliveredAt，不改状态                  | P1     |
++| B17 | 绕过状态机              | `POST /entry/upsert` 传 handoffs            | `400 BAD_REQUEST`（handoffs 不走通用写）   | P0     |
++| B18 | 通知内容               | 建委托后看通知                                    | 含标题、指派对象、发起人、事项摘要                   | P1     |
++| B19 | 通知抑制               | **test 通道**建委托                             | **不发通知**                            | P1     |
++| B20 | 侧栏数字               | 客户端侧栏                                      | 数字 = 可见的 open 委托数，10 秒内刷新           | P1     |
++
++> **通知用例（B18/B19）执行前提**：`notifyHandoff` 只认 `https://qyapi.weixin.qq.com/` 开头，且跳过时不打日志。必须先加 `TEAM_SPACE_NOTIFY_URL` 覆盖开关 + `TEAM_SPACE_NOTIFY_LOG`，否则「没发」和「跳过」无法区分。
++
++### C. 四表 CRUD（18 条）
++
++| ID  | 场景                       | 入口                              | 预期                                 | P  |
++| --- | ------------------------ | ------------------------------- | ---------------------------------- | -- |
++| C01 | 待办增改删                    | `/entry/upsert`、`/entry/remove` | 正常落盘                               | P1 |
++| C02 | 待办（agent 工具）             | `team_space_add_todo`           | 正常落盘                               | P1 |
++| C03 | 技能登记                     | `POST /entry/upsert`            | 落 skills，算 textHash                | P1 |
++| C04 | 技能登记（agent 工具）           | `team_space_share_skill`        | 同上，省略 content 时读本地 SKILL.md        | P1 |
++| C05 | 技能正文                     | `GET /detail?table=skills`      | 返回 content；`/list` 里**不含** content | P0 |
++| C06 | 插件登记                     | `POST /entry/upsert`            | 落 plugins                          | P1 |
++| C07 | 插件登记（agent 工具）           | `team_space_share_plugin`       | 同上                                 | P1 |
++| C08 | 链接：git                   | `/entry/upsert` `type=git`      | 存 git 类型                           | P1 |
++| C09 | 链接：类型推断                  | 只传 name+url                     | 按域名推断 doc/wiki/board/other         | P1 |
++| C10 | 链接：公网 http 被拒            | `http://10.evil.com` 等 4 个变体    | `403 FORBIDDEN`                    | P0 |
++| C11 | 链接：描述自动补                 | 只传 name+url                     | description 非空                     | P1 |
++| C12 | 删除条目                     | `POST /entry/remove`            | 记录消失                               | P0 |
++| C13 | 删除（兼容入口）                 | `POST /remove` + table          | 记录消失                               | P1 |
++| C14 | 同名视为同一条                  | 两次 upsert 同名                    | 只有一条，第二次是更新                        | P0 |
++| C15 | 换作者无 baseVersion         | 他人覆盖                            | `409 VERSION_CONFLICT`             | P0 |
++| C16 | 有 baseVersion 无 takeOver | 他人覆盖                            | `409 VERSION_CONFLICT`             | P1 |
++| C17 | 显式 takeOver              | 带 `takeOver=true`               | 接管成功                               | P1 |
++| C18 | 作者名归一                    | `Xinzhan` vs `xinzhan`          | 视为同一人，不误判接管                        | P1 |
++
++### D. 安装与升级链路（14 条）
++
++| ID  | 场景            | 入口                         | 预期                                         | P  |
++| --- | ------------- | -------------------------- | ------------------------------------------ | -- |
++| D01 | 装插件（tgz）      | `POST /install-plugin`     | 下载→解压→落到 profile，返回 checksum               | P0 |
++| D02 | 装插件（npm spec） | 同上                         | 走 npm，落盘，返回 checksum                       | P1 |
++| D03 | 安装不启用         | 只看安装后状态                    | **不写** `package.json` / `cordis.patch.yml` | P1 |
++| D04 | 启用插件          | `POST /plugin/enable`      | 写 `dsh.profile.bundles`，loader 行 YAML 合法   | P0 |
++| D05 | checksum 不匹配  | enable 传错 checksum         | 拒绝                                         | P0 |
++| D06 | 没有安装记录就启用     | enable 无记录的名字              | `404 NOT_FOUND`                            | P1 |
++| D07 | 装团队空间自己       | install-plugin 指向本插件          | 仅 link 安装返回 `403`；常规安装允许，返回 checksum，重启后生效 | P0 |
++| D08 | link 安装不被替换   | 本机是符号链接时点更新                | `403`，提示用 link 安装                          | P0 |
++| D09 | 装技能           | `POST /install-skill`      | 写入 `~/.dsh/skills/<name>/SKILL.md`         | P0 |
++| D10 | 导出 Codex 技能   | `POST /export-codex-skill` | 生成文件，内容与团队空间一致                             | P1 |
++| D11 | 下载包           | `GET /download?file=`      | 返回 tgz，路径穿越被拒                              | P0 |
++| D12 | 并发安装          | 同时发两次 install-plugin       | 不互相踩，最多一个生效                                | P1 |
++| D13 | 安装失败可回滚       | 拿一个坏包                      | 旧目录完好                                      | P1 |
++| D14 | 升级后版本号        | 客户端卡片                      | 显示新版本，不是「当前插件」                             | P0 |
++
++### E. 成员与设备（10 条）
++
++| ID  | 场景             | 入口                            | 预期                      | P  |
++| --- | -------------- | ----------------------------- | ----------------------- | -- |
++| E01 | 加入 + 心跳        | `POST /join`                  | 新设备入 joins，重复调更新 seenAt | P0 |
++| E02 | 自检心跳不污染设备列表    | `/join` deviceId=`selftest-*` | 设备列表条数不变                | P1 |
++| E03 | 设备状态           | `GET /gateway-status`         | 返回 host id、在线数、joins 数  | P1 |
++| E04 | 成员卡保存          | `POST /member/save`           | 落 skills 里的 member 记录   | P1 |
++| E05 | 成员卡列表          | `GET /member/list`            | 返回 name + bio           | P1 |
++| E06 | 成员列表（agent 工具） | `team_space_list_members`     | 与 E05 一致                | P0 |
++| E07 | 成员列表（MCP）      | `team_space_list_members`     | 与 E05 一致                | P0 |
++| E08 | 局域网地址          | `GET /lan-link`               | 返回可访问的 IP:端口            | P1 |
++| E09 | 身份卡            | `GET /self-config`            | 返回 serverUrl / 本机身份     | P1 |
++| E10 | 新会话            | `POST /new-session`           | 建出会话并返回 id              | P2 |
++
++
++### F. 通道隔离（14 条）⭐ 新功能
++
++| ID  | 场景                | 入口                         | 预期                         | P  |
++| --- | ----------------- | -------------------------- | -------------------------- | -- |
++| F01 | 测试通道写记录           | header                     | 落盘带 `channel:"test"`，返回值也带 | P0 |
++| F02 | 真实列表看不到测试记录       | `GET /list`                | 0 条                        | P0 |
++| F03 | 测试列表能看到           | `GET /list` + header       | 1 条                        | P1 |
++| F04 | 测试通道叠加真实数据        | 同上                         | 测试条数 > 真实条数                | P1 |
++| F05 | 真实 detail 取不到测试记录 | `GET /detail`              | `400 记录不存在`                | P0 |
++| F06 | 测试通道删真实记录         | `POST /entry/remove`       | `403 FORBIDDEN`            | P0 |
++| F07 | 测试通道改真实记录         | `POST /entry/upsert`       | `403 FORBIDDEN`            | P0 |
++| F08 | 被拒后真实数据未变         | 复查                         | 内容一字未改                     | P0 |
++| F09 | 测试通道建委托不发通知       | `/handoff/create` + header | 通知不发出                      | P0 |
++| F10 | 测试通道认领真实委托        | `/handoff/claim` + header  | `403 FORBIDDEN`            | P0 |
++| F11 | 会话分享自动落测试通道       | `/share/submit` + header   | 记录带 channel=test           | P1 |
++| F12 | 两种通道指定方式          | header 与 `?channel=test`   | 结果一致                       | P1 |
++| F13 | 不带通道 = 真实通道       | 无 header 无参数               | 只看真实数据                     | P0 |
++| F14 | 切回后测试数据不可见但不丢     | 切通道复查 store                | 列表看不见，文件里还在                | P1 |
++
++### G. 跨端一致性（12 条）
++
++| ID  | 场景                             | 对比                           | 预期                             | P  |
++| --- | ------------------------------ | ---------------------------- | ------------------------------ | -- |
++| G01 | 条目数量                           | 客户端 / 门户 / MCP               | 三端同表数量相同                       | P0 |
++| G02 | 排序                             | 客户端 / 门户                     | 都按 `updatedAt ?? createdAt` 降序 | P1 |
++| G03 | 技能正文                           | MCP `get_skill` / `/detail`  | 内容一致                           | P1 |
++| G04 | 成员列表 | agent / MCP / `/member/list` | **成员集合**一致；结构各自约定（HTTP 对象 / agent 文本 / MCP devices+memberCards） | P1 |
++| G05 | 门户只读                           | 门户页                          | 没有新增/删除/安装入口                   | P0 |
++| G06 | 门户深链                           | `#repos`、`?tab=repos`        | 直达对应表                          | P1 |
++| G07 | 安装状态判定                         | 客户端卡片                        | 主服务器显示「当前插件」，成员显示「更新/安装」       | P0 |
++| G08 | `/list` 不带 installedLink       | `/list` 返回体                  | 不含该字段（纯本机概念）                   | P1 |
++| G09 | `/local-state` 带 installedLink | 该接口                          | 是布尔值                           | P1 |
++| G10 | 版本号一致                          | `package.json` / 客户端显示 / 清单  | 三处相同                           | P0 |
++| G11 | MCP 工具与处理器                     | 静态                           | 9 个工具全部有处理器                    | P1 |
++| G12 | agent 工具真正可调                   | 运行时                          | 7 个工具各调一次不报错                   | P0 |
++
++> **G12 执行前提**：`dev/mock-host.mjs` 的 `tools.register` 目前是空实现，需先改成收集注册表，否则 agent 工具没有调用入口。
++
++### H. UI 交互（16 条）
++
++| ID  | 场景           | 预期                         | P  |
++| --- | ------------ | -------------------------- | -- |
++| H01 | 侧栏标签         | 显示「团队空间（N）」，N 为可见 open 委托数 | P0 |
++| H02 | 数字位置         | 数字在文字之后，不在前面               | P1 |
++| H03 | 通道徽标         | 切到测试通道后标题旁出现橙色徽标           | P0 |
++| H04 | 通道切换后刷新      | 列表立刻变，不用手动刷新（不被去重吞掉）       | P0 |
++| H05 | 添加链接弹窗       | 只填名称 + 链接，弹窗而非内联           | P1 |
++| H06 | 保存后立即可见      | 不用刷新页面                     | P0 |
++| H07 | 子表横向 + 末尾「+」 | 文档在最前，「+」在最后一个             | P2 |
++| H08 | 门户无「+」       | 只读门户不出现新增入口                | P1 |
++| H09 | @ 菜单排序       | 精确 > 前缀 > 包含；成员/链接/技能都在    | P1 |
++| H10 | @ 选成员        | 插入「给「X」派一个委托，事项：」          | P1 |
++| H11 | toast 位置     | 多次提示位置不漂移                  | P2 |
++| H12 | 安装按钮状态       | 当前插件 / 更新 / 安装 三态正确        | P1 |
++| H13 | 删除确认         | 二次确认，取消不删                  | P1 |
++| H14 | 版本冲突提示       | 显示冲突 + 「接管」按钮              | P1 |
++| H15 | 空状态文案        | 每张表有可操作提示                  | P2 |
++| H16 | 搜索过滤         | 按标题/描述/URL 过滤，计数同步         | P2 |
++
++### I. 版本发布与跨机器（10 条）
++
++| ID  | 场景                   | 预期                        | P  |
++| --- | -------------------- | ------------------------- | -- |
++| I01 | 清单版本 = dist 里最新的 tgz | 一致                        | P0 |
++| I02 | installCommand 地址可下载 | `curl` 拿到 tgz             | P0 |
++| I03 | 客户端检测到新版             | 显示「更新」按钮                  | P1 |
++| I04 | 更新后版本变化              | 卡片显示新版本                   | P1 |
++| I05 | 更新留备份                | 目标目录有 `.bak-*`            | P1 |
++| I06 | web profile 独立更新     | `~/.dsh/profiles/web` 也能升 | P1 |
++| I07 | 宿主半改动要重启             | 只刷新页面不生效（预期行为，不是 bug）     | P2 |
++| I08 | **Neo 机器**成员视角       | 通道徽标、更新按钮、委托可见性           | P0 |
++| I09 | **佳瑛机器**成员视角（按需求跳过） | 不执行；成员端由 Neo 覆盖            | P1 |
++| I10 | 三台机器版本一致             | 都是 2.7.86+                | P1 |
++
++### J. 补充用例（本轮新增，9 条）
++
++| ID | 场景 | 入口 | 预期 | P |
++|---|---|---|---|---|
++| J01 | 旧数据升级迁移 | 用没有 `channel` 字段的旧 `team-space.json` 启动新版本 | 旧记录全部可见、可写；写回后不丢字段 | P0 |
++| J02 | 重启持久化 | 写入 → 重启宿主 → 再读 | 委托状态、安装记录、条目均不丢 | P0 |
++| J03 | store 损坏不静默清空 | 写入非法 JSON 后调任一写接口 | 拒绝写入并保留原文件，**不得用空 store 覆盖** | P0 |
++| J04 | 多进程并发写 | 两个进程同时 upsert | 文件锁生效，无丢失更新；超时返回明确错误 | P1 |
++| J05 | 通知失败可观测 | webhook 返回 500 / 超时 | 宿主记错误日志，委托仍创建成功 | P0 |
++| J06 | 通道隔离覆盖门户与 MCP | `?channel=test` 打开 portal、MCP `list_*` | 不泄漏真实数据，也不允许改真实数据 | P0 |
++| J07 | 载荷边界 | `content` 200KB、标题/描述超长 | 按上限截断，不 500、不写半个文件 | P1 |
++| J08 | 客户端断网 | 宿主不可达时点分享/认领 | 明确错误提示，不白屏、不静默成功 | P2 |
++| J09 | 门店端升级持久性 | 升级后检查 profile 依赖 / lockfile | 依赖与 lockfile 指向新版本；重启或重装不回退 | P0 |
++
++---
++
++## 5. 执行计划
++
++| 阶段     | 内容                                                           | 环境                   | 预计    | 产出                             |
++| ------ | ------------------------------------------------------------ | -------------------- | ----- | ------------------------------ |
++| **S1** | L1 静态契约 + L3 多路径一致性（B01-B04, B06-B09, C03-C07, E06-E07, G12） | mock 宿主（临时 DSH_HOME） | 2.5 h | 改 `dev/mock-host.mjs`：捕获 `tools.register` |
++| **S2** | L2 接口行为（A/C/D/E 组）                                           | mock 宿主 + 真实宿主       | 2.5 h | 新建 `dev/e2e-full.mjs`          |
++| **S3** | L5 通道隔离（F 组 14 条）                                            | 真实宿主                 | 0.5 h | 已有 14 条，补脚本化                   |
++| **S4** | L7 安装升级（D 组 + I 组）                                           | 临时 DSH_HOME 真装       | 1.5 h | 新建 `dev/check-install-e2e.mjs` |
++| **S5** | L4 跨端一致性（G 组）                                                | 三端同时查                | 1 h   | 脚本 + 截图                        |
++| **S6** | L6 UI（H 组 16 条）                                              | 真实客户端 + headless     | 1.5 h | 截图归档                           |
++| **S7** | 跨机器：I08 已完成（Neo 17/17 ×2 + 真升级 + J09 4/4）；I09 按需求跳过 | Neo（佳瑛机器不测）       | 0.5 h | 远程命令 + 截图                      |
++
++**冒烟门槛**：`dev/e2e-p0.mjs` 覆盖 55 条 P0，约 45 分钟，接在 `dev/release.sh` 的「2/5 离线自检」之后。
++
++合计约 **10.5 小时**。其中 S1 和 S4 需要写新脚本，其余是补用例。
++
++**执行顺序的理由**：先用 mock 把多路径一致性（最便宜、最能抓这次的 bug）跑通，再花钱在真实环境和 UI 上。
++
++---
++
++## 6. 通过标准
++
++| 级别       | 标准                             |
++| -------- | ------------------------------ |
++| **发版门槛** | 所有 **P0** 用例（55 条）通过，无例外       |
++|          | P1 通过率 ≥ 95%（不通过的必须有书面结论）      |
++|          | `channel=test` 残留 = 0，真实数据条数不变 |
++| **证据要求** | 每条用例附命令 + 实际输出；UI 类附截图         |
++| **不接受**  | 「应该可以」「跑通了」（没有输出）              |
++| **已知缺陷** | 允许带着走，但必须写进 README「已知边界」并标注    |
++
++---
++
++## 7. 风险与依赖
++
++| 风险              | 影响                       | 应对                                       |
++| --------------- | ------------------------ | ---------------------------------------- |
++| UI 用例需要人眼看      | 无法远程截 Neo 的屏（无屏幕录制权限）  | UI 组在本机做；Neo 只验接口层与安装态                     |
++| mock 宿主 ≠ 真实宿主  | 有些行为（文件落盘、安装）mock 不了     | 安装组用临时 DSH_HOME 真跑                       |
++| 测试污染真实数据        | 团队空间是共享的                 | 全程 test 通道 + 每条自带清理                      |
++| 企微通知测试会打扰群      | 每次跑通知用例群里都响              | 通知用例改成指向假 webhook，只看日志                   |
++| 137 条执行一遍要 10.5 小时 | 反馈慢                   | 拆成「每次发版跑 P0 冒烟（55 条 / 约 45 分钟）」+「大版本跑全量」 |
++
++---
++
++## 8. 需要你评审的四个决策
++
++| # | 决策点                    | 我的建议                       |
++| - | ---------------------- | -------------------------- |
++| 1 | 用例范围够不够（137 条）         | 够覆盖现有功能；新增场景优先加进 J 组        |
++| 2 | 优先级划分是否认同（P0 = 55 条）   | 已按「数据/状态机/安装/通道」重划，P0 直接当门槛 |
++| 3 | 是否接受「每次发版只跑 P0 冒烟」     | 建议接受，全量只在有较大改动时跑           |
++| 4 | 通知类用例要不要真的打群           | **改假 webhook**；需先加 `TEAM_SPACE_NOTIFY_URL`（当前只认企微域名，假地址会被静默跳过） |
+diff --git "a/docs/\346\265\213\350\257\225\346\211\247\350\241\214\350\256\260\345\275\225-2026-10-24.md" "b/docs/\346\265\213\350\257\225\346\211\247\350\241\214\350\256\260\345\275\225-2026-10-24.md"
+new file mode 100644
+index 0000000..4559295
+--- /dev/null
++++ "b/docs/\346\265\213\350\257\225\346\211\247\350\241\214\350\256\260\345\275\225-2026-10-24.md"
+@@ -0,0 +1,178 @@
++# 团队空间 · 测试执行记录（2026-10-24）
++
++> 对应方案：`docs/测试方案-全量.md`（137 条用例，P0 = 55）
++> 结论：**364 项检查点全绿**；发现 9 个问题，8 个已修复、1 个已记录口径。
++> 状态：H 组 16/16、J 组 9/9；Neo 成员端 / 门店端两轮 + J09 专项全部通过；I09 按需求跳过（佳瑛机器不测）。
++
++## 1. 环境
++
++| 项 | 值 |
++|---|---|
++| 版本 | 2.7.86 + J09 修复（工作分支 `test/2026-10-24-full-suite`） |
++| 真实宿主 | `http://127.0.0.1:8080/api/team-space`（DSH 正在运行） |
++| Mock 宿主 | `dev/mock-host.mjs`，临时 `DSH_HOME` |
++| 系统 | macOS |
++| 数据纪律 | 全部写操作走 `x-team-space-channel: test`，跑完清理 |
++
++## 2. 结果总览
++
++| 套件 | 命令 | 结果 | 覆盖 |
++|---|---|---|---|
++| Mock 宿主 | `node dev/mock-host.mjs` | **91/91 通过** | 多路径一致性、通知副作用、安装链路、J09、通道隔离、成员/技能 |
++| 存储健壮性 | `node dev/check-store.mjs` | **5/5 通过** | J01 旧数据迁移、J03 损坏不被覆盖 |
++| 真机自检 | `node dev/selftest.mjs` | **146/146 通过** | 原有 A–G 大部分接口与状态机、J09 护栏 |
++| P0 冒烟（新增） | `node dev/e2e-p0.mjs` | **23/23 通过** | detail / download / member / portal / guide / export / consume / MCP |
++| UI 回归（新增） | `NODE_PATH=… node dev/e2e-ui.cjs --url=…` | **28/28 通过** | H01–H16；16 条用例、28 个检查点 |
++| 并发写 / 载荷边界（新增） | `node dev/e2e-j.mjs --a=… --b=…` | **17/17 通过** | J04 两进程 80 次并发写、J07 200KB / 超长字段 |
++| 重启持久化（新增） | `node dev/e2e-restart.mjs` | **8/8 通过** | J02 真实双进程重启、技能 / 插件 / 委托 / 安装记录保留 |
++| 客户端断网（新增） | `NODE_PATH=… node dev/e2e-offline.cjs --url=…` | **8/8 通过** | J08 认领 / 分享请求中断，提示、白屏、服务端状态 |
++
++合计 **326 项检查点**（本机）**+ 34 项成员端断言（17/17 ×2） + 4 项 J09 门店端专项 = 364 项**，全部通过。
++
++## 3. 本轮补上的关键覆盖
++
++| 能力 | 之前 | 现在 |
++|---|---|---|
++| 建委托三条路径 | 只测 HTTP | HTTP / agent 工具 / MCP 各建一条，比对字段 + 通知次数 |
++| 交回结果三条路径 | 只测 HTTP | 三条路径都跑到 `done`，`result` 写回一致 |
++| agent 工具运行时 | 零覆盖 | 7 个工具中有调用入口，已实际执行 5 个（create/complete/list_members/share_skill 等） |
++| 安装链路 | 只测拒绝分支 | 真下载 tgz → 解压 → 落盘 → checksum → enable → 校验 profile 依赖与 loader 行 |
++| 升级持久性 | 未测 | J09：固化 tgz、真实包名依赖、lockfile 同步、pnpm frozen 重装、重启不回退 |
++| 通知副作用 | 看不见 | `TEAM_SPACE_NOTIFY_LOG` 逐次记录（sent / failed / skipped），假 webhook 真收包 |
++| store 损坏 | 未测 | 覆盖并发现数据丢失缺陷 |
++| 4 条从未打过的路由 | 0 | detail / download / member/list / portal / guide / export-codex-skill / handoff/consume 均已实际调用 |
++| UI 交互 | 只有静态断言 | Playwright 真实点击 H01–H16，28 个检查点全绿，13 张截图归档 |
++| 重启与并发 | 未测 | J02 真实重启、J04 双 DSH 80 次并发写、J07 载荷边界均通过 |
++| 客户端断网 | 未测 | J08 认领 / 分享断网均显示可行动中文提示，不白屏、不静默成功 |
++
++## 4. 发现的缺陷
++
++### 4.1 【P0 · 已修复】store 损坏会静默清空团队数据
++
++- 现象：`team-space.json` 出现非法 JSON 时，`loadStore()` 的 `catch` 直接返回空 store；下一次任意写操作会用空数据覆盖原文件。
++- 证据：修复前 `node dev/check-store.mjs` 3 条失败，写入接口返回 200 且文件被覆盖为空表。
++- 修复：`lib/index.js` 改为「读失败但文件存在 → 抛错停写，原文件不动」；仅 `ENOENT` 才当首次运行。
++- 复验：`check-store.mjs` 5/5 通过。
++
++### 4.2 【P1 · 已修复】企微通知不看响应码
++
++- 现象：`await fetch(...)` 没有检查 `response.ok`，企微返回 500 仍被当作发送成功，日志里也没有失败记录。
++- 修复：非 2xx 记 `failed` + `console.error`；新增 `TEAM_SPACE_NOTIFY_URL`（覆盖目标）与 `TEAM_SPACE_NOTIFY_LOG`（JSONL 记录，含 skipped 原因）。
++- 复验：mock 场景断言 `webhook 返回 500 → failed，委托仍创建成功` 通过。
++
++### 4.3 【P1 · 已记录】三端 `list_members` 返回结构不一致
++
++| 端 | 返回 |
++|---|---|
++| `GET /member/list` | `{ members: [{ name, bio }] }` |
++| agent 工具 | `{ count, members: ["名字：简介"] }` |
++| MCP | `{ onlineDevices, totalDevices, devices, memberCards }` |
++
++成员**集合**一致，但结构三套。已在方案 G04 改为「集合一致、结构各自约定」；若产品要求统一，需要单独排期。
++
++### 4.4 【P1 · 已修正用例】D07 过期
++
++原用例要求「安装团队空间自己 → 403」，但代码已改成只拦 link 安装。方案 D07 期望已更新。
++
++### 4.5 【P1 · 已修复】发布门禁形同虚设
++
++- 现象：`release.sh` 里写的是 `node dev/xxx.mjs | tail -2`。管道的退出码取 `tail`，永远是 0，测试失败发布会继续。
++- 修复：改成 `run_check` 函数，失败时打印最后 30 行并 `exit 1`；同时接入 `e2e-p0` 与 `check-store`。
++- 验证：用必然失败的命令跑 `run_check`，确认中止（exit=1）。
++
++### 4.6 【P1 · 已修复】门店端升级后依赖与 lockfile 仍指向旧包
++
++- 现象：Neo 的目录已是 2.7.86，但 profile 依赖仍指 2.7.64、lock 指 2.7.58，下一次重装会静默回退。
++- 根因：同名依赖更新被提前 return 跳过；请求名 `dsh-team-space` 与真实包名 `@local/dsh-team-space` 不一致，依赖写错 key。
++- 修复：按已安装 `package.json` 的真实包名更新；固化本次安装目录为 tgz；同步 profile 依赖和 pnpm lock。
++- 复验：Neo 依赖 / lock / 包均为 2.7.86；pnpm `--frozen-lockfile` 与 DSH 重启后均不回退。
++
++### 4.7 【P1 · 已修复】新增记录按钮错误显示「保存更新」
++
++- 现象：新增链接时编辑对象是空对象 `{}`，按钮用 `editing ? '保存更新' : '保存'` 判断，空对象也是 truthy，于是新增也显示「保存更新」。
++- 修复：`lib/client.js` 改为 `editing?.id ? '保存更新' : '保存'`。
++- 复验：H05 真实点击新增链接，弹窗按钮为「保存」，保存后立即出现在列表中。
++
++### 4.8 【P1 · 已修复】版本冲突时「接管这条记录」被弹窗遮罩挡住
++
++- 现象：保存触发 `VERSION_CONFLICT` 后，冲突条已经渲染，但编辑弹窗和遮罩仍保留在上层，「接管这条记录」无法点击。
++- 修复：冲突分支 `setEditing(null)` 关闭弹窗；草稿已保存在 `conflict.draft`，接管时继续使用，不丢输入。
++- 复验：H14 另起一次写入制造冲突，冲突原因、接管按钮、接管后的作者回切均正常。
++
++### 4.9 【P2 · 已修复】断网时把浏览器原文 `Failed to fetch` 显示给用户
++
++- 现象：认领 / 分享请求被中断时，界面直接显示 `Failed to fetch`，门店同事不知道是网络问题还是操作失败。
++- 修复：客户端统一包装网络异常——本机请求提示「连不上本机 DSH 服务，请确认 DSH 仍在运行后重试」，团队空间请求提示「连不上团队空间服务器，请检查网络或服务器地址后重试」。
++- 复验：J08 认领 / 分享各 4 项，共 8/8 通过；提示为中文，页面不白屏，服务端状态不变。
++
++## 5. 未执行项
++
++| 用例 | 原因 | 建议 |
++|---|---|---|
++| ~~I08 跨机器成员视角~~ | **已执行**（Neo，17/17） | — |
++| ~~J02 / J04 / J07 / J08~~ | **已执行** | — |
++| I09 佳瑛机器 | 用户明确不测；成员视角已由 Neo 覆盖 | 如需第三方门店机复验，按 Neo 同一命令执行 |
++| D07 / D08 / D14 | 需要真实 link 安装 / 已发布新版本 | 在发布者机器上单独跑 |
++| I04 更新检测 | I03 已在 Neo 验过版本比较；I04 需要 dist 里存在更高版本 | 下次发版时顺带验 |
++
++## 5.1 成员端 / 门店端（Neo）
++
++| 项 | 值 |
++|---|---|
++| 机器 | `XinZhandeMacBook-Neo.local` · **192.168.43.134**（`ssh neo`；旧 192.168.40.44 已失效） |
++| 系统 | macOS 26.6.2 |
++| 角色 | 成员端 + 门店端（copy 安装，非 link） |
++| 主服务器 | `http://192.168.42.124:8080/api/team-space` |
++| 本机 DSH API | 动态端口 `60717`（本轮最终复验） |
++| 初始 / 最终版本 | 2.7.85 → **2.7.86 + J09 验证包** |
++
++执行：`dev/e2e-member.mjs`（scp 到 Neo，用 DSH 自带 node 跑）
++
++**结果：17/17 通过 ×2**（本轮最终回归再跑两轮，进程启动于 16:18，晚于验证包 16:17 的部署时间），覆盖：
++
++- 成员能连主服务器 `/list`、门户、新手引导、安装包下载
++- `installedLink=false`（成员端不是发布者）、`/list` 不返回 `installedLink`
++- 版本态：升级前「应提示更新」→ 升级后「当前插件」
++- 委托可见性：指定成员可见、路人不可见
++- 真实工作流：主服务器派单 → Neo 认领（doing）→ 交回（done + result）
++- 成员写入落 test 通道，真实列表不受污染
++- 成员端 MCP：9 个工具、能读技能
++
++### 真升级与 J09 修复：2.7.85 → 2.7.86
++
++- 首次 `POST /install-plugin`：成功，checksum `1693cbf2…`
++- `POST /plugin/enable`：成功（loader 行已存在，返回 `already`）
++- 修复前复现：目录 2.7.86，但 profile 依赖指 `dsh-team-space-2.7.64.tgz`，lock 指 2.7.58。
++- 最终验证包 SHA-256：`5337ef9fddaa0fc99100432b6934486996318525cd96f7d3cd900bff9664d851`
++- profile 依赖：`@local/dsh-team-space: file:~/.dsh/plugins/dsh-team-space-2.7.86.tgz`
++- lockfile：importer / packages / snapshots 三处均为 `file:../../plugins/dsh-team-space-2.7.86.tgz`
++- 固化包：`~/.dsh/plugins/dsh-team-space-2.7.86.tgz`，integrity 已写入 lock
++- 隔离目录用 Neo 自带 pnpm 11.28.5 执行 `--offline --frozen-lockfile --config.auto-install-peers=false`：安装结果 **2.7.86**
++- 临时目录已清理；DSH 重启后再次检查，依赖与 lock 未回退，再次跑成员端冒烟 **17/17 ×2**
++
++
++## 6. 代码改动
++
++| 文件 | 改动 |
++|---|---|
++| `lib/index.js` | store 损坏保护；通知响应码检查；J09 固化安装包 + 真实包名 + lockfile 同步 |
++| `lib/client.js` | 新增按钮文案修正；版本冲突关闭遮罩；网络失败中文提示 |
++| `dev/mock-host.mjs` | 新增多路径一致性、安装链路、J09（含真实 pnpm 重装）、成员/技能场景 |
++| `dev/e2e-p0.mjs` | 新增：真实宿主 P0 冒烟 |
++| `dev/check-store.mjs` | 新增：迁移与损坏保护 |
++| `dev/selftest.mjs` | 端口探测校验 JSON；新增 2 项 J09 源码护栏 |
++| `dev/e2e-member.mjs` | 新增：成员端/门店端冒烟（在成员机跑） |
++| `dev/e2e-ui.cjs` | 新增：H01–H16 Playwright 真实交互与截图 |
++| `dev/e2e-j.mjs` | 新增：J04 多进程并发写、J07 载荷边界 |
++| `dev/e2e-restart.mjs` | 新增：J02 真实 DSH 重启持久化 |
++| `dev/e2e-offline.cjs` | 新增：J08 认领 / 分享断网 UI 验证 |
++| `dev/release.sh` | 接入门禁；`run_check` 失败即中止（原来 `\| tail` 吞掉退出码） |
++| `docs/测试方案-全量.md` | 数字校正、P0 重划、补 J 组、I09 跳过口径、用例口径修正 |
++| `README.md` | 补充 enable 固化安装包与同步 lockfile 的说明 |
++
++## 7. 下一步
++
++1. I09 按需求跳过，不再补跑佳瑛机器。
++2. D07 / D08 / D14、I04 仍需在发版时按各自前提补验。
++3. 变更仍在工作分支 `test/2026-10-24-full-suite`，尚未 commit / push / 发正式包。
++4. Neo 当前运行的是 J09 验证包（2.7.86 + 修复），不是正式发布包；正式发版后按同一路径再验一次。
+diff --git "a/docs/\346\265\213\350\257\225\346\212\245\345\221\212-2026-10-24.md" "b/docs/\346\265\213\350\257\225\346\212\245\345\221\212-2026-10-24.md"
+new file mode 100644
+index 0000000..860349b
+--- /dev/null
++++ "b/docs/\346\265\213\350\257\225\346\212\245\345\221\212-2026-10-24.md"
+@@ -0,0 +1,290 @@
++# 团队空间 · 测试报告
++
++> 版本 2.7.86 + J09 修复 · 2026-10-24 · 范围：本机（主服务器）+ Neo（成员端 / 门店端）
++> 结论：**364 项检查点全绿**；发现 9 个问题，其中 8 个已修复，1 个已记录口径；0 阻断发布，0 待处理缺陷。
++
++---
++
++## 1. 结论
++
++| 项 | 结果 |
++|---|---|
++| 用例总数 | 137（P0 55 / P1 75 / P2 7） |
++| 已执行并通过 | 121 条（88%） |
++| 未执行 | 16 条；I09 按需求跳过（佳瑛机器不测），其余缺安装 / 发版前提 |
++| 本机检查点 | 326 项（mock 91 + store 5 + selftest 146 + p0 23 + UI 28 + J04/J07 17 + J02 8 + J08 8） |
++| Neo 检查点 | 成员端 17 项 ×2 + J09 专项 4 项 = 38 项，均通过 |
++| 阻断发布的问题 | 0（已修复项已复验） |
++| 待处理缺陷 | 0（I09 为明确跳过的测试项，不是缺陷） |
++| 工作分支 | `test/2026-10-24-full-suite`（未提交、未发版） |
++
++---
++
++## 2. 环境
++
++| 角色 | 机器 | 地址 | 版本 |
++|---|---|---|---|
++| 主服务器 | Mac-mini | `192.168.42.124:8080` | 2.7.86 |
++| 成员端 / 门店端 | XinZhandeMacBook-Neo.local | `192.168.43.134`（`ssh neo`） | 2.7.85 → **2.7.86 + J09 验证包** |
++| Mock 宿主 | 本机临时 `DSH_HOME` | 随机端口 | 源码即测 |
++| 系统 | macOS | — | 主服务器 / Neo 26.6.2 |
++
++Neo 的关键状态：copy 安装（非 link）、`installedLink:false`、`serverUrl` 指向主服务器、DSH 重启后仍为 2.7.86。最终验证包 SHA-256 为 `5337ef9fddaa0fc99100432b6934486996318525cd96f7d3cd900bff9664d851`，profile 依赖与 lockfile 均指向 `~/.dsh/plugins/dsh-team-space-2.7.86.tgz`；DSH 进程启动时间晚于验证包部署时间。
++
++---
++
++## 3. 方法
++
++1. **能力 × 入口**：同一能力的所有入口都跑，并比对结果与副作用（不是只测一条 HTTP 路由）。
++2. **副作用单验**：通知、落盘、profile 写入、备份、通道标记分别断言。
++3. **数据纪律**：所有写操作走 `x-team-space-channel: test`，每条用例自带清理，结束断言零残留。
++4. **分层**：L1 静态契约 → L2 接口 → L3 多路径 → L5 通道 → L7 安装；UI 与跨机器单独标注。
++
++---
++
++## 4. 执行结果
++
++| 套件 | 命令 | 断言 | 结果 | 覆盖重点 |
++|---|---|---|---|---|
++| Mock 宿主 | `node dev/mock-host.mjs` | 91 | ✅ | 多路径一致性、通知副作用、安装链路、J09、通道、成员/技能 |
++| 存储健壮性 | `node dev/check-store.mjs` | 5 | ✅ | 旧数据迁移、损坏不覆盖 |
++| 真机自检 | `node dev/selftest.mjs` | 146 | ✅ | 原有接口、状态机、通道、跨端静态检查、J09 |
++| P0 冒烟 | `node dev/e2e-p0.mjs` | 23 | ✅ | detail/download/member/portal/guide/export/consume/MCP |
++| UI 回归 | `node dev/e2e-ui.cjs --url=…` | 28 | ✅ | H01–H16，真实点击、通道切换、弹窗、冲突、空态、搜索 |
++| 并发写 / 载荷边界 | `node dev/e2e-j.mjs --a=… --b=…` | 17 | ✅ | J04 双进程 80 次并发写、J07 200KB / 超长字段 |
++| 重启持久化 | `node dev/e2e-restart.mjs` | 8 | ✅ | J02 真实 DSH 重启，技能 / 插件 / 委托 / 安装记录保留 |
++| 客户端断网 | `node dev/e2e-offline.cjs --url=…` | 8 | ✅ | J08 认领 / 分享失败提示、不白屏、不静默成功 |
++| 成员端（Neo） | `dev/e2e-member.mjs` | 17 | ✅ ×2 | 连通、版本态、委托可见性、认领/交回、写入隔离、MCP |
++| J09 门店端专项（Neo） | profile / lock / pnpm / 重启 | 4 | ✅ | 依赖指向新包、lock 同步、frozen 重装、重启不回退 |
++
++---
++
++## 5. 用例覆盖
++
++| 组 | 主题 | 用例 | 已执行 | 未执行 |
++|---|---|---|---|---|
++| A | 会话分享与认领 | 14 | 12 | A12 / A13 |
++| B | 委托 F-Assign | 20 | 19 | B20（UI） |
++| C | 四表 CRUD | 18 | 17 | C11 |
++| D | 安装与升级 | 14 | 9 | D02 / D07 / D08 / D12 / D13 |
++| E | 成员与设备 | 10 | 9 | E10 |
++| F | 通道隔离 | 14 | 14 | — |
++| G | 跨端一致性 | 12 | 10 | G02 / G06 |
++| H | UI 交互 | 16 | 16 | — |
++| I | 版本与跨机器 | 10 | 6 | I06 / I07 / I10；I09 按需求跳过 |
++| J | 补充用例 | 9 | 9 | — |
++
++---
++
++## 6. 缺陷清单
++
++### 6.1【P0 · 已修复】store 损坏会静默清空团队数据
++
++- 现象：`team-space.json` 非法 JSON → `loadStore()` 返回空 store → 下一次写用空数据覆盖原文件。
++- 证据：修复前 `check-store` 3 条失败，写接口返回 200 且文件被覆盖为空表。
++- 修复：文件存在但解析失败 → 抛错停写，原文件不动；仅 `ENOENT` 返回空 store。
++
++### 6.2【P1 · 已修复】企微通知不看响应码
++
++- 现象：`fetch` 未检查 `response.ok`，500 被当成发送成功，日志无记录。
++- 修复：非 2xx 记 `failed` + 错误日志；新增 `TEAM_SPACE_NOTIFY_URL` / `TEAM_SPACE_NOTIFY_LOG`。
++
++### 6.3【P1 · 已修复】发布门禁形同虚设
++
++- 现象：`release.sh` 用 `node xxx | tail -2`，退出码取 `tail`（恒 0），测试失败仍继续发布。
++- 修复：`run_check` 失败打印日志并 `exit 1`；同时接入 `check-store`、`e2e-p0`。
++
++### 6.4【P1 · 已记录】三端 `list_members` 结构不一致
++
++| 端 | 返回 |
++|---|---|
++| `GET /member/list` | `{ members: [{ name, bio }] }` |
++| agent 工具 | `{ count, members: ["名字：简介"] }` |
++| MCP | `{ onlineDevices, totalDevices, devices, memberCards }` |
++
++成员集合一致，结构三套。方案 G04 已改为「集合一致、结构各自约定」；要统一需单独排期。
++
++### 6.5【P1 · 已修复】门店端升级后依赖与 lockfile 仍指向旧包
++
++- 现象：Neo 目录已是 **2.7.86**，但 profile 仍为 `@local/dsh-team-space: file:...2.7.64.tgz`，`pnpm-lock.yaml` 指向 2.7.58；下一次 profile 重装会静默回退。
++- 根因 1：`registerProfileDependency` 发现同名依赖就直接跳过，版本永远不更新。
++- 根因 2：安装请求名是 `dsh-team-space`，真实包名是 `@local/dsh-team-space`；依赖写错 key 会留下旧 `@local` 依赖。
++- 修复：enable 以已安装 `package.json` 的真实包名为准；把当前目录固化为 `~/.dsh/plugins/<短名>-<版本>.tgz`；同步更新 profile 依赖与 `pnpm-lock.yaml` 的 importer / packages / snapshots。
++- Neo 复验：依赖、lock、固化包均为 2.7.86；Neo 自带 pnpm `--offline --frozen-lockfile` 重装仍为 2.7.86；DSH 重启后依赖与 lock 未被改回。
++- 回归：`mock-host` 增加 5 项 J09 断言（含真实 pnpm 重装），selftest 增加 2 项源码护栏。
++
++### 6.6【P2 · 已修正用例】D07 过期
++
++原用例要求「安装自己 → 403」，代码已改为仅拦 link 安装；方案 D07 期望已更新。
++
++### 6.7【P1 · 已修复】新增记录按钮错误显示「保存更新」
++
++- 现象：新增链接时 `editing` 是空对象 `{}`，truthy 判断导致按钮显示「保存更新」。
++- 修复：`lib/client.js` 改为按 `editing?.id` 判断。
++- 复验：H05 新增链接弹窗按钮为「保存」，保存后记录立即出现。
++
++### 6.8【P1 · 已修复】版本冲突时「接管这条记录」无法点击
++
++- 现象：冲突条已经出现，但编辑弹窗与遮罩仍在最上层，接管按钮被挡住。
++- 修复：冲突时关闭编辑弹窗；草稿保存在 `conflict.draft`，接管时继续使用。
++- 复验：H14 冲突提示、接管按钮、接管后作者回切全部通过。
++
++### 6.9【P2 · 已修复】断网时界面显示原始 `Failed to fetch`
++
++- 现象：认领 / 分享请求失败时直接暴露浏览器错误，缺少可行动信息。
++- 修复：客户端区分本机与团队空间服务器，统一提示「连不上…请…重试」。
++- 复验：J08 认领 / 分享共 8 项检查全部通过，服务端状态未被误写。
++
++---
++
++## 7. 修改内容
++
++### 7.1 代码
++
++| 文件 | 改动 | 规模 |
++|---|---|---|
++| `lib/index.js` | store 损坏保护；通知响应码检查；J09 安装包固化 + 真实包名 + lockfile 同步 | +177 / -18 |
++| `lib/client.js` | 新增按钮文案；冲突弹窗关闭；网络失败中文提示 | +21 / -5 |
++| `dev/selftest.mjs` | 端口探测校验 JSON；J09 源码护栏；新增 2 项断言 | +11 / -3 |
++| `dev/release.sh` | 新增 `run_check` 门禁，失败中止；接入 4 个套件 | +19 / -2 |
++| `dev/mock-host.mjs` | 多路径一致性、安装链路、J09、成员/技能场景 | +217 / -2 |
++| `README.md` | 补充 enable 固化安装包与同步 lockfile 的说明 | +3 |
++
++### 7.2 新增脚本
++
++| 文件 | 用途 |
++|---|---|
++| `dev/e2e-p0.mjs` | 真实宿主 P0 冒烟：detail / download / member / portal / guide / export / consume / MCP |
++| `dev/e2e-member.mjs` | 成员端/门店端冒烟：在成员机跑，验证连主服务器、版本态、委托全流程、写入隔离 |
++| `dev/check-store.mjs` | 旧数据迁移 + store 损坏不被覆盖 |
++| `dev/e2e-ui.cjs` | H01–H16 Playwright 真实交互；13 张截图；测试数据自动清理 |
++| `dev/e2e-j.mjs` | J04 双 DSH 并发写 + J07 载荷边界 |
++| `dev/e2e-restart.mjs` | J02 拉起真实 DSH、写入、重启、读回并清理 |
++| `dev/e2e-offline.cjs` | J08 认领 / 分享断网的真实 UI 验证 |
++
++### 7.3 关键代码
++
++```js
++// 之前：坏 JSON 直接返回空 store，下一次写就把真实数据覆盖
++} catch { return { tasks: [], ... } }
++
++// 现在：文件存在但解析失败 → 停写
++if (error?.code === 'ENOENT') return emptyStore()
++throw new Error(`团队空间存储损坏，已停止读写：${storePath()}（${error.message}）`)
++```
++
++```js
++// 通知：以前不看响应码
++const response = await fetch(url, { ... })
++if (!response.ok) {
++  attempt({ status: 'failed', httpStatus: response.status })
++  console.error('[team-space] 企微通知失败', response.status)
++}
++```
++
++```sh
++# 门禁：以前 `| tail -2` 吞掉退出码
++run_check() {
++  label=$1; shift
++  if ! "$@" > "$CHECK_LOG" 2>&1; then
++    echo "  ✗ $label 失败"; tail -30 "$CHECK_LOG"; exit 1
++  fi
++  tail -2 "$CHECK_LOG"
++}
++run_check e2e-p0 node dev/e2e-p0.mjs
++```
++
++```js
++// J09：按真实包名更新依赖，并固化本次安装目录
++const packageName = manifest.name           // 请求名 dsh-team-space → 真实 @local/dsh-team-space
++archive = await snapshotInstalledPackage(dest, packageName, audit.version)
++registerProfileDependency(profileDir, packageName, audit.version, `file:${archive.archive}`)
++syncProfileLockfile(profileDir, packageName, `file:${archive.archive}`, audit.version, archive.integrity)
++```
++
++```js
++// 新增与更新共用表单：空对象不能再被当成「正在编辑」
++busy ? '保存中…' : editing?.id ? '保存更新' : '保存'
++```
++
++```js
++// VERSION_CONFLICT：冲突条在弹窗下面，必须收起遮罩；草稿仍保留在 conflict.draft
++setConflict({ message, draft, baseVersion, crossAuthor })
++setEditing(null)
++```
++
++```js
++// 断网：不要把 Failed to fetch 原样抛给用户
++const response = await fetchWithMessage(url, init,
++  '连不上团队空间服务器，请检查网络或服务器地址后重试')
++```
++
++### 7.4 文档与配置
++
++| 文件 | 改动 |
++|---|---|
++| `docs/测试方案-全量.md` | 数字校正；用例 128→137；P0 76→55；补 J 组；I09 跳过；D07/G04/B18/G12 口径修正 |
++| `docs/测试执行记录-2026-10-24.md` | 新增；含 H/J 全量执行、Neo 成员端/门店端与升级记录 |
++| `docs/测试报告-2026-10-24.md` | 本报告 |
++| `docs/changes-2026-10-24.diff` | 完整 diff（含修改文件、7 个新增测试脚本、3 份测试文档） |
++| `docs/images/ui-*.png` | H 组 13 张 + J08 断网 1 张，共 14 张 UI 证据 |
++| `~/.ssh/config` | `Host neo` 的 HostName 由 192.168.40.44 改为 192.168.43.134（备份 `config.bak-20261024`） |
++
++---
++
++## 8. UI 截图索引
++
++| 用例 | 截图 |
++|---|---|
++| H01 / H02 | `docs/images/ui-H01-H02-nav-count.png` |
++| H03 / H04 | `docs/images/ui-H03-H04-channel.png` |
++| H05 | `docs/images/ui-H05-add-link-dialog.png` |
++| H06 / H07 | `docs/images/ui-H06-H07-created-link.png` |
++| H08 | `docs/images/ui-H08-portal.png` |
++| H09 | `docs/images/ui-H09-at-menu.png` |
++| H10 | `docs/images/ui-H10-insert-member.png` |
++| H11 | `docs/images/ui-H11-toast-long.png` |
++| H12 | `docs/images/ui-H12-plugin-states.png` |
++| H13 | `docs/images/ui-H13-delete-confirm.png` |
++| H14 | `docs/images/ui-H14-version-conflict.png` |
++| H15 | `docs/images/ui-H15-empty-states.png` |
++| H16 | `docs/images/ui-H16-search.png` |
++| J08 认领断网 | `docs/images/ui-J08-offline-claim.png` |
++
++---
++
++## 9. 遗留与下一步
++
++| 项 | 说明 |
++|---|---|
++| I09 佳瑛机器 | 按需求跳过；Neo 已覆盖成员端 / 门店端，不作为发布阻断项 |
++| D07 / D08 / D14 | 需要真实 link 安装 / 已发布新版本，在发布者机器上单独跑 |
++| I04 更新检测 | 需要 dist 里存在更高版本，下次发版时顺带验 |
++| 其余未执行 15 条 | 均因前置条件不足；H 组、J 组已全部执行，I09 单独按需求跳过 |
++| 提交与发版 | 变更在 `test/2026-10-24-full-suite`，尚未 commit / push / 发正式包；Neo 当前是 J09 验证包，不是正式发布包 |
++
++---
++
++## 10. 附录：复现命令
++
++```sh
++# 本机基线
++node dev/mock-host.mjs
++node dev/check-store.mjs
++node dev/selftest.mjs
++node dev/e2e-p0.mjs
++
++# UI / J 组（Playwright 装在 /tmp/dsh-e2e-ui）
++export NODE_PATH=/tmp/dsh-e2e-ui/node_modules
++node dev/e2e-ui.cjs --url='http://127.0.0.1:56404/?token=…'
++node dev/e2e-offline.cjs --url='http://127.0.0.1:56404/?token=…'
++node dev/e2e-j.mjs --a=http://127.0.0.1:56404 --b=http://127.0.0.1:57750
++node dev/e2e-restart.mjs
++
++# Neo（成员端 / 门店端）
++scp dev/e2e-member.mjs neo:/tmp/e2e-member.mjs
++ssh neo 'ELECTRON_RUN_AS_NODE=1 "/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
++  /tmp/e2e-member.mjs --server=http://192.168.42.124:8080/api/team-space \
++  --local=http://127.0.0.1:60717/api/team-space --name=Neo \
++  --device=3a0b45c5-56ec-453e-a7db-0d9c3b05c6f5'
++```

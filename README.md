@@ -229,6 +229,9 @@ sh dev/release.sh 2.7.54 "改了什么"
    **不写** profile 的 `package.json`，也**不写** `cordis.patch.yml`；
 2. 页面把来源、路径、SHA256 弹出来让用户确认；
 3. 用户确认后 `POST /plugin/enable { name, checksum }` 才登记依赖并写 loader 行；
+   同时按已安装 `package.json` 的真实包名把当前目录固化为
+   `~/.dsh/plugins/<短名>-<版本>.tgz`，并同步 profile 依赖与 `pnpm-lock.yaml`，
+   避免后续 `pnpm install` 按旧 tgz 把版本静默回退；
 4. 重启 DSH 后加载。
 
 所以「同事发个链接 → 你点一下 → 重启后它就在你机器上跑代码」这条链断在第 2 步。

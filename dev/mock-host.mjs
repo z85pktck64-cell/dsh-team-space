@@ -1,7 +1,8 @@
 // 用 mock 宿主加载插件，真起 HTTP 服务验证「认领三段式 / 回执两段式」
 // 这样不用重启 DSH 也能验证宿主半的新逻辑。
 import { createServer } from 'node:http'
-import { mkdtempSync } from 'node:fs'
+import { execSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -11,6 +12,7 @@ process.env.DSH_HOME = home
 const mod = await import(new URL('../lib/index.js', import.meta.url).href)
 
 const routes = []
+const tools = new Map()
 const state = {
   // 本机是否「持有」源会话：false = 跨设备场景（主服务器没有别人的会话文件）
   hasLocalSession: false,
@@ -57,7 +59,12 @@ const ctx = {
     },
   },
   agentDefaultModel: { currentSelection: () => ({ provider: 'mock', model: 'mock-1' }) },
-  tools: { register: () => {} },
+  tools: {
+    register: definition => {
+      tools.set(definition.name, definition)
+      return () => tools.delete(definition.name)
+    },
+  },
   connection: { authenticatedUrl: url => url, lanAddress: () => '127.0.0.1' },
   effect: fn => { try { fn?.() } catch { /* mock */ } },
   onDispose: () => {},
@@ -95,6 +102,13 @@ async function call(path, body, headers) {
   const response = await fetch(`${base}/${path}`, options)
   const data = await response.json().catch(() => null)
   return { status: response.status, data }
+}
+
+async function callFail(path, body, headers) {
+  const merged = { accept: 'application/json', 'content-type': 'application/json', ...(headers ?? {}) }
+  const response = await fetch(`${base}/${path}`, { method: 'POST', headers: merged, body: JSON.stringify(body ?? {}) })
+  const data = await response.json().catch(() => null)
+  return { status: response.status, code: data?.code ?? '', error: data?.error ?? '' }
 }
 
 let checks = 0
@@ -373,6 +387,226 @@ ok('测试通道认领真实委托被拒（「测试里点认领」绝不能等�
   denyClaim.data.code === 'FORBIDDEN', JSON.stringify(denyClaim.data))
 ok('真实委托仍是 open（没被测试动作改掉）',
   ((await call('list')).data.tables?.handoffs ?? []).find(h => h.id === realHandoff.data.id)?.status === 'open')
+
+
+// ---------- 场景 5：多路径一致性（HTTP / agent 工具 / MCP） ----------
+console.log('多路径一致性：建委托 / 交回结果 / 通知副作用')
+
+const notifyLog = join(home, 'notify.jsonl')
+process.env.TEAM_SPACE_NOTIFY_LOG = notifyLog
+const hookBodies = []
+let hookStatus = 200
+const hook = createServer((req, res) => {
+  let body = ''
+  req.on('data', chunk => { body += chunk })
+  req.on('end', () => {
+    hookBodies.push(body)
+    res.statusCode = hookStatus
+    res.end('{"errcode":0}')
+  })
+})
+await new Promise(resolve => hook.listen(0, '127.0.0.1', resolve))
+process.env.TEAM_SPACE_NOTIFY_URL = `http://127.0.0.1:${hook.address().port}/hook`
+
+const notifyRows = () => {
+  try {
+    return readFileSync(notifyLog, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
+  } catch { return [] }
+}
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+async function mcpCall(name, args, user = '甲') {
+  const response = await fetch(`${base}/mcp`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, user, method: 'tools/call', params: { name, arguments: args } }),
+  })
+  const data = await response.json()
+  const text = data?.result?.content?.[0]?.text ?? '{}'
+  return { ...JSON.parse(text), isError: Boolean(data?.result?.isError) }
+}
+
+const payload = { title: '多路径一致性', brief: '同一份说明', target: '甲', owner: '乙' }
+const viaHttp = await call('handoff/create', payload)
+const viaAgent = await tools.get('team_space_create_handoff').execute(payload)
+const viaMcp = await mcpCall('team_space_create_handoff', payload)
+await sleep(250)
+
+const ids = { http: viaHttp.data.id, agent: viaAgent.id, mcp: viaMcp.id }
+ok('三条路径都建出了委托', Object.values(ids).every(Boolean), JSON.stringify(ids))
+const afterCreate = (await call('list')).data.tables?.handoffs ?? []
+ok('三条委托都出现在同一张表里',
+  Object.values(ids).every(id => afterCreate.some(h => h.id === id)))
+ok('三条委托字段一致（status / target）',
+  Object.values(ids).every(id => {
+    const h = afterCreate.find(item => item.id === id)
+    return h?.status === 'open' && h?.target === '甲'
+  }))
+const details = await Promise.all(Object.values(ids).map(id => call(`detail?table=handoffs&id=${id}`)))
+ok('三条委托的 brief 一致（列表不返回 brief，要查 detail）',
+  details.every(d => d.data?.entry?.brief === '同一份说明'),
+  JSON.stringify(details.map(d => d.data?.entry?.brief)))
+const sent = notifyRows().filter(row => row.status === 'sent')
+ok('三条建委托路径各发一次通知（agent 工具曾经漏过）',
+  Object.values(ids).every(id => sent.filter(r => r.handoffId === id).length === 1),
+  JSON.stringify(notifyRows()))
+ok('通知请求真的打到了 webhook', hookBodies.length === 3, `实际 ${hookBodies.length}`)
+
+hookStatus = 500
+const failNotify = await call('handoff/create', { title: '通知失败可观测', brief: 'x', owner: '乙' })
+await sleep(250)
+const failedRows = notifyRows().filter(row => row.status === 'failed' && row.handoffId === failNotify.data.id)
+ok('webhook 返回 500 时记 failed，委托仍然创建成功',
+  failedRows.length === 1 && failedRows[0].httpStatus === 500 && Boolean(failNotify.data.id),
+  JSON.stringify(notifyRows()))
+hookStatus = 200
+
+await call('handoff/claim', { id: ids.http, by: '甲' })
+await call('handoff/claim', { id: ids.agent, by: '甲' })
+await mcpCall('team_space_claim_handoff', { id: ids.mcp })
+const completeHttp = await call('handoff/complete', { id: ids.http, result: 'HTTP 做完', by: '甲' })
+const completeAgent = await tools.get('team_space_complete_handoff').execute({ id: ids.agent, result: 'agent 做完' })
+const completeMcp = await mcpCall('team_space_complete_handoff', { id: ids.mcp, result: 'MCP 做完' })
+const afterDone = (await call('list')).data.tables?.handoffs ?? []
+ok('三条路径都能把委托交回 done',
+  Object.values(ids).every(id => afterDone.find(h => h.id === id)?.status === 'done'),
+  JSON.stringify(afterDone.filter(h => Object.values(ids).includes(h.id)).map(h => [h.id, h.status])))
+const doneDetails = await Promise.all(Object.values(ids).map(id => call(`detail?table=handoffs&id=${id}`)))
+ok('三条路径交回结果都写进了 result（列表不返回 result）',
+  doneDetails[0].data?.entry?.result === 'HTTP 做完'
+  && doneDetails[1].data?.entry?.result === 'agent 做完'
+  && doneDetails[2].data?.entry?.result === 'MCP 做完',
+  JSON.stringify(doneDetails.map(d => d.data?.entry?.result)))
+
+const agentCancel = await tools.get('team_space_create_handoff').execute({ title: '待取消', brief: 'x', owner: '乙' })
+const cancelled = await call('handoff/cancel', { id: agentCancel.id, reason: '不做了', by: '乙' })
+const afterCancel = ((await call('list')).data.tables?.handoffs ?? []).find(h => h.id === agentCancel.id)
+ok('取消委托仍可用（状态变 cancelled）', cancelled.data?.ok === true && afterCancel?.status === 'cancelled',
+  JSON.stringify({ reply: cancelled.data, status: afterCancel?.status }))
+
+hook.close()
+
+
+// ---------- 场景 6：安装链路端到端（D01 / D03 / D04 / D05 / D06） ----------
+console.log('安装链路端到端（真下载 / 真解压 / 真启用）')
+
+const fixtureRoot = join(home, 'fixture-pkg')
+mkdirSync(fixtureRoot, { recursive: true })
+writeFileSync(join(fixtureRoot, 'package.json'), JSON.stringify({ name: '@local/p0-fixture', version: '0.0.1', main: 'index.js' }))
+writeFileSync(join(fixtureRoot, 'index.js'), 'export default {}\n')
+const tarball = join(home, 'p0-fixture.tgz')
+execSync(`tar -czf "${tarball}" -C "${fixtureRoot}" .`)
+
+const pkgServer = createServer((req, res) => {
+  res.setHeader('content-type', 'application/octet-stream')
+  res.end(readFileSync(tarball))
+})
+await new Promise(resolve => pkgServer.listen(0, '127.0.0.1', resolve))
+const pkgUrl = `http://127.0.0.1:${pkgServer.address().port}/p0-fixture.tgz`
+
+const profileDir = join(home, 'profiles', 'desktop')
+const installedRoot = join(profileDir, 'node_modules', '@local', 'p0-fixture')
+const installedAt = join(installedRoot, 'package.json')
+const profilePkg = join(profileDir, 'package.json')
+const patchFile = join(profileDir, 'cordis.patch.yml')
+const lockFile = join(profileDir, 'pnpm-lock.yaml')
+const oldArchive = join(home, 'plugins', 'p0-fixture-0.0.0.tgz')
+mkdirSync(profileDir, { recursive: true })
+mkdirSync(installedRoot, { recursive: true })
+writeFileSync(installedAt, JSON.stringify({ name: '@local/p0-fixture', version: '0.0.0', main: 'index.js' }))
+mkdirSync(join(home, 'plugins'), { recursive: true })
+execSync(`cp "${tarball}" "${oldArchive}"`)
+writeFileSync(profilePkg, `${JSON.stringify({
+  name: 'mock-profile',
+  private: true,
+  dependencies: { '@local/p0-fixture': `file:${oldArchive}` },
+}, null, 2)}\n`)
+writeFileSync(lockFile, `lockfileVersion: '9.0'\n\nsettings:\n  autoInstallPeers: true\n  excludeLinksFromLockfile: false\n\nimporters:\n\n  .:\n    dependencies:\n      '@local/p0-fixture':\n        specifier: file:${oldArchive}\n        version: file:../../plugins/p0-fixture-0.0.0.tgz\n\npackages:\n\n  '@local/p0-fixture@file:../../plugins/p0-fixture-0.0.0.tgz':\n    resolution: {integrity: sha512-old, tarball: file:../../plugins/p0-fixture-0.0.0.tgz}\n    version: 0.0.0\n\nsnapshots:\n\n  '@local/p0-fixture@file:../../plugins/p0-fixture-0.0.0.tgz': {}\n`)
+const profileBeforeInstall = readFileSync(profilePkg, 'utf8')
+
+const installed = await call('install-plugin', { name: 'p0-fixture', url: pkgUrl })
+ok('D01 tgz 安装返回 checksum', /^[a-f0-9]{64}$/.test(String(installed.data?.checksum ?? '')),
+  JSON.stringify(installed.data).slice(0, 200))
+ok('D01 包真的落到 node_modules/p0-fixture', existsSync(installedAt))
+ok('D03 安装后不自动写 profile 依赖',
+  readFileSync(profilePkg, 'utf8') === profileBeforeInstall)
+ok('D03 安装后不自动写 loader 行',
+  !existsSync(patchFile) || !readFileSync(patchFile, 'utf8').includes('p0-fixture'))
+
+// 固化包必须排除备份与依赖目录：带依赖的插件否则会打出几倍大的包，重装还带出一堆残留
+mkdirSync(join(installedRoot, '.bak-1700000000000'), { recursive: true })
+writeFileSync(join(installedRoot, '.bak-1700000000000', 'stale.txt'), 'stale\n')
+mkdirSync(join(installedRoot, 'node_modules', 'dummy'), { recursive: true })
+writeFileSync(join(installedRoot, 'node_modules', 'dummy', 'index.js'), 'module.exports = 1\n')
+// 造 5 个很旧的包：prune 只留最近 3 个
+for (let i = 0; i < 5; i += 1) {
+  const stale = join(home, 'plugins', `p0-fixture-0.8.${i}.tgz`)
+  writeFileSync(stale, 'old')
+  execSync(`touch -t 202001010000 "${stale}"`)
+}
+
+const enabled = await call('plugin/enable', { name: 'p0-fixture', checksum: installed.data.checksum })
+ok('D04 确认启用成功且提示重启', enabled.data?.ok === true && enabled.data?.needsRestart === true)
+ok('D04 启用后写了 profile 依赖',
+  existsSync(profilePkg) && readFileSync(profilePkg, 'utf8').includes('p0-fixture'))
+ok('D04 启用后写了 loader 行',
+  existsSync(patchFile) && readFileSync(patchFile, 'utf8').includes('p0-fixture'))
+const patchText = existsSync(patchFile) ? readFileSync(patchFile, 'utf8') : ''
+ok('D04 loader 行等于相对 node_modules 的路径', patchText.includes('name: "@local/p0-fixture"'), patchText.slice(0, 200))
+ok('D04 loader 行的 name 加了引号（YAML 保留字符安全）', patchText.includes('name: "@local/p0-fixture"'), patchText.slice(0, 200))
+
+// J09：升级后 profile 依赖必须指向本次安装的包，而不是保留旧 tgz。
+// 请求名用短名、真实包名带 @local，复刻 Neo 门店端的实际安装方式。
+const profileAfter = JSON.parse(readFileSync(profilePkg, 'utf8'))
+const dependency = profileAfter.dependencies?.['@local/p0-fixture'] ?? ''
+const archive = dependency.startsWith('file:') ? dependency.slice(5) : ''
+ok('J09 profile 依赖按真实包名更新到本次安装包',
+  archive.endsWith('/plugins/p0-fixture-0.0.1.tgz') && existsSync(archive), dependency)
+ok('J09 安装包已固化且与启用版本一致',
+  existsSync(archive)
+  && JSON.parse(execSync(`tar -xOf "${archive}" ./package.json`, { encoding: 'utf8' })).version === '0.0.1')
+const listing = execSync(`tar -tzf "${archive}"`, { encoding: 'utf8' })
+ok('J09 固化包不含 .bak 备份目录', !/\.bak-/.test(listing), listing.split('\n').filter(n => /\.bak-/.test(n)).join(','))
+ok('J09 固化包不含 node_modules', !/node_modules/.test(listing), listing.split('\n').filter(n => /node_modules/.test(n)).join(','))
+const tgzLeft = readdirSync(join(home, 'plugins')).filter(name => name.endsWith('.tgz'))
+ok('J09 旧安装包清理到最近 3 个', tgzLeft.length === 3, tgzLeft.join(','))
+ok('J09 本次安装包没有被清理掉', tgzLeft.includes('p0-fixture-0.0.1.tgz'), tgzLeft.join(','))
+
+const lockAfter = readFileSync(lockFile, 'utf8')
+ok('J09 lockfile importer 指向新包',
+  lockAfter.includes(`specifier: file:${archive}`)
+  && lockAfter.includes('version: file:../../plugins/p0-fixture-0.0.1.tgz')
+  && !lockAfter.includes('p0-fixture-0.0.0.tgz'), lockAfter.slice(0, 600))
+ok('J09 lockfile package/snapshot 都有新版本与 integrity',
+  lockAfter.includes("'@local/p0-fixture@file:../../plugins/p0-fixture-0.0.1.tgz':")
+  && /resolution: \{integrity: sha512-[A-Za-z0-9+/=]+, tarball: file:\.\.\/\.\.\/plugins\/p0-fixture-0\.0\.1\.tgz\}/.test(lockAfter))
+
+// 真正跑一次 pnpm：lock 与固化包必须自洽，不能把版本回退到 0.0.0
+execSync('pnpm install --offline --frozen-lockfile --ignore-scripts', { cwd: profileDir, stdio: 'pipe' })
+ok('J09 pnpm --frozen-lockfile 重装后仍是 0.0.1',
+  JSON.parse(readFileSync(installedAt, 'utf8')).version === '0.0.1')
+
+const badChecksum = await callFail('plugin/enable', { name: 'p0-fixture', checksum: 'deadbeef' })
+ok('D05 checksum 不一致被拒', badChecksum.code === 'FORBIDDEN', JSON.stringify(badChecksum))
+const unknown = await callFail('plugin/enable', { name: 'p0-not-installed', checksum: 'x' })
+ok('D06 没有安装记录不能启用', unknown.code === 'NOT_FOUND', JSON.stringify(unknown))
+
+pkgServer.close()
+
+// E06 / D09：agent 工具成员列表、技能安装
+await call('member/save', { name: 'p0-agent-member', bio: '## 能接什么活\n- mock' })
+const agentMembers = await tools.get('team_space_list_members').execute({})
+const httpMembers = await call('member/list')
+const agentNames = (agentMembers.members ?? []).map(item => String(item).split('：')[0])
+const httpNames = (httpMembers.data.members ?? []).map(item => item.name)
+ok('E06 agent list_members 与 /member/list 成员集合一致（结构各自约定）',
+  JSON.stringify(agentNames.sort()) === JSON.stringify(httpNames.sort()),
+  JSON.stringify({ agent: agentNames, http: httpNames }))
+
+const skillInstalled = await call('install-skill', { name: 'p0-installed-skill', content: 'P0 SKILL 正文' })
+const skillFile = join(home, 'skills', 'p0-installed-skill', 'SKILL.md')
+ok('D09 技能安装真的落盘', existsSync(skillFile) && readFileSync(skillFile, 'utf8') === 'P0 SKILL 正文',
+  String(skillFile))
 
 server.close()
 console.log(`\n结果：${checks - failed}/${checks} 通过${failed ? `，${failed} 条失败` : '，全部通过'}\n`)

@@ -44,8 +44,25 @@ echo "== 2/5 离线自检 =="
 # 两个都要跑，各自证明不同的事：
 #   mock-host —— 用临时 DSH_HOME 真跑**这份源码**，不重启 DSH 就能验宿主半的新逻辑
 #   selftest  —— 打本机**运行中**的宿主，证明线上那份没坏（刚改完还没重启时它会落后一个版本）
-node dev/mock-host.mjs 2>&1 | tail -2
-node dev/selftest.mjs 2>&1 | tail -2
+#   e2e-p0    —— selftest 没覆盖的路由（detail/download/member/portal/MCP/consume）
+#   check-store —— 旧数据迁移 + store 损坏不静默清空
+# 注意：不能写成 `node xxx | tail -2` —— tail 的退出码永远是 0，
+# 测试挂了发布也会继续。这里统一走 run_check，失败直接中止。
+CHECK_LOG="${TMPDIR:-/tmp}/team-space-release-check.log"
+run_check() {
+  label=$1
+  shift
+  if ! "$@" > "$CHECK_LOG" 2>&1; then
+    echo "  ✗ $label 失败"
+    tail -30 "$CHECK_LOG"
+    exit 1
+  fi
+  tail -2 "$CHECK_LOG"
+}
+run_check mock-host node dev/mock-host.mjs
+run_check check-store node dev/check-store.mjs
+run_check selftest node dev/selftest.mjs
+run_check e2e-p0 node dev/e2e-p0.mjs
 
 echo "== 3/5 打包 =="
 rm -f "$TARBALL"
