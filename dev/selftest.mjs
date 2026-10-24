@@ -264,7 +264,11 @@ async function runCrossEnd(base) {
   ok('添加表单是弹窗', /ts-entry-modal/.test(clientSrc) && /ts-modal-mask/.test(clientSrc))
   ok('保存后清去重缓存再拉', /lastJson\.current = ''\s*\n\s*await load\(\)/.test(clientSrc))
 
-  // 22) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
+  // 22) 输入框 @ 菜单：团队空间对象排在技能之后、文件之前
+  ok('客户端 inject inputTriggers', /inject: \['slots', 'uiWorkspace', 'sessions', 'inputTriggers'\]/.test(clientSrc))
+  ok('注册了 @ 来源且 order 在文件之前', /name: 'team-space'/.test(clientSrc) && /order: -5/.test(clientSrc))
+
+  // 23) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
   let readme = ''
   try { readme = readFileSync(root + 'README.md', 'utf8') } catch { /* 没有就报红 */ }
   ok('README 保留三端同步约定', readme.includes('三个消费方'))
