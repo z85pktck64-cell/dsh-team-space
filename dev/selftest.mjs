@@ -260,7 +260,11 @@ async function runCrossEnd(base) {
   ok('服务端按域名推断链接类型', /function inferLinkMeta/.test(indexSrc) && /feishu\.cn/.test(indexSrc))
   ok('表单只剩名称与链接', /repos: \[\s*\n\s*\['name', '名称', 'input'\],\s*\n\s*\['url'/.test(clientSrc))
 
-  // 21) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
+  // 21) 添加表单是弹窗（不内联在列表里），保存后强制刷新
+  ok('添加表单是弹窗', /ts-entry-modal/.test(clientSrc) && /ts-modal-mask/.test(clientSrc))
+  ok('保存后清去重缓存再拉', /lastJson\.current = ''\s*\n\s*await load\(\)/.test(clientSrc))
+
+  // 22) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
   let readme = ''
   try { readme = readFileSync(root + 'README.md', 'utf8') } catch { /* 没有就报红 */ }
   ok('README 保留三端同步约定', readme.includes('三个消费方'))
