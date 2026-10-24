@@ -728,6 +728,14 @@ async function runChannelIsolation(base) {
   ok('发版脚本会同步客户端版本常量',
     /const PLUGIN_VERSION/.test(readFileSync(root + 'dev/release.sh', 'utf8')))
 
+  // 门户页是「打开即最新」的设计：它由宿主现读 portal.html 发出去（no-store），
+  // 没有自己的版本，也不该参与版本闸门 —— 一旦它带上 x-team-space-version，
+  // 旧缓存的门户页会被服务器拒掉，而它根本没有「升级」这个动作可做。
+  ok('门户页不参与版本闸门（不带 x-team-space-version）',
+    !/x-team-space-version/.test(portalSrc))
+  ok('门户页每次都是最新（no-store 现读文件发出去）',
+    /cache-control': 'no-store'/.test(indexSrc) && /function servePortalPage/.test(indexSrc))
+
   // CORS 预检的根治检查：客户端在 call() 里加的每个 x-team-space-* header，
   // 服务端 access-control-allow-headers 都必须放行。漏一个的后果是所有成员
   // 跨源请求直接失败、界面显示「连不上」，而本机同源完全看不出来。
