@@ -84,6 +84,7 @@ async function main() {
   const stamp = `p0-${Date.now().toString(36)}`
   const skillName = `${stamp}-skill`
   const memberName = `${stamp}-member`
+  const memberRecordName = `member-${memberName}`
   const exportName = `${stamp}-export`
   let handoffId = ''
 
@@ -176,7 +177,7 @@ async function main() {
   // 清理
   const after = await call(base, 'list', undefined, TEST)
   for (const item of after.tables?.skills ?? []) {
-    if (item.name?.startsWith(stamp)) {
+    if (item.name?.startsWith(stamp) || item.name === memberRecordName) {
       await call(base, 'entry/remove', { table: 'skills', id: item.id }, TEST)
     }
   }
@@ -187,7 +188,8 @@ async function main() {
   try { rmSync(dirname(exportFile), { recursive: true, force: true }) } catch { /* 清理失败不影响结果 */ }
 
   const residual = await call(base, 'list', undefined, TEST)
-  const leftoverSkills = (residual.tables?.skills ?? []).filter(item => item.name?.startsWith(stamp))
+  const leftoverSkills = (residual.tables?.skills ?? [])
+    .filter(item => item.name?.startsWith(stamp) || item.name === memberRecordName)
   const leftoverHandoffs = (residual.tables?.handoffs ?? []).filter(item => String(item.title ?? '').startsWith(stamp))
   ok('测试通道无残留', leftoverSkills.length === 0 && leftoverHandoffs.length === 0,
     `skills=${leftoverSkills.length} handoffs=${leftoverHandoffs.length}`)
