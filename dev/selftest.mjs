@@ -249,7 +249,11 @@ async function runCrossEnd(base) {
   ok('客户端横向子分类', /ts-subbar/.test(clientSrc) && /ts-subchip/.test(clientSrc))
   ok('门户页横向子分类', /subbar/.test(portalSrc) && /subchip/.test(portalSrc))
 
-  // 19) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
+  // 19) 「+ 添加」两端都要有：门户页在 chips 末尾，客户端在列表底部
+  ok('门户页有「+ 添加」入口', /subchip-add/.test(portalSrc) && /openLinkForm/.test(portalSrc))
+  ok('客户端有「+ 添加链接」入口', /ts-add-row/.test(clientSrc) && /setEditing\(\{\}\)/.test(clientSrc))
+
+  // 20) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
   let readme = ''
   try { readme = readFileSync(root + 'README.md', 'utf8') } catch { /* 没有就报红 */ }
   ok('README 保留三端同步约定', readme.includes('三个消费方'))
