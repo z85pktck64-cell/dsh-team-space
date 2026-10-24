@@ -285,7 +285,7 @@ async function runCrossEnd(base) {
   ok('侧栏显示委托数（括号形式）',
     /ts-nav-count/.test(clientSrc) && /（\$\{/.test(clientSrc)
     && /item\.status === 'open'/.test(clientSrc))
-  ok('侧栏标签有委托时带数字', /function sidebarLabel/.test(clientSrc) && /label: \(\) => sidebarLabel\(\)/.test(clientSrc))
+  ok('数字在「团队空间」文字之后', /ts-nav-text/.test(clientSrc) && /'团队空间',/.test(clientSrc))
 
   // 26) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
   let readme = ''
