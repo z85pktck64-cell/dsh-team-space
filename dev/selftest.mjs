@@ -112,6 +112,9 @@ async function runCrossEnd(base) {
 
   // 3) 安装状态的正确来源是 /local-state（请求方本机），不是 /list（响应方机器）
   const listed = await call(base, 'list').catch(() => null)
+  // 版本闸门：客户端拿这个值和自己的包版本比，落后就弹强制升级窗
+  ok('/list 带回宿主版本号（客户端据此判断是否落后）',
+    /^\d+\.\d+\.\d+$/.test(String(listed?.version?.host ?? '')), String(listed?.version?.host))
   const selfPlugin = (listed?.tables?.plugins ?? []).find(x => x.name === 'dsh-team-space')
   ok('/list 不返回 installedLink（它是纯本机概念，混进来会误导成员）',
     selfPlugin && selfPlugin.installedLink === undefined,
@@ -712,6 +715,18 @@ async function runChannelIsolation(base) {
     /CHANNEL === 'test'/.test(portalSrc) && /test-banner/.test(portalSrc))
   ok('MCP stdio 支持 TEAM_SPACE_CHANNEL=test',
     /TEAM_SPACE_CHANNEL/.test(stdioSrc) && /channel:/.test(stdioSrc))
+
+  // ---- 版本闸门：强制一致 ----
+  ok('宿主版本直接读 package.json（发版只改一处，不会漏）',
+    /new URL\('\.\.\/package\.json', import\.meta\.url\)/.test(indexSrc))
+  ok('写入口挂版本闸门（mutateStore 是唯一写入口）',
+    /function assertVersionFresh/.test(indexSrc) && /assertVersionFresh\(\)/.test(indexSrc))
+  ok('客户端每次请求都上报 x-team-space-version',
+    /'x-team-space-version': PLUGIN_VERSION/.test(clientSrc))
+  ok('客户端有强制升级弹窗（盖住界面、服务端已拒写）',
+    /ts-gate/.test(clientSrc) && /UPGRADE_REQUIRED/.test(clientSrc))
+  ok('发版脚本会同步客户端版本常量',
+    /const PLUGIN_VERSION/.test(readFileSync(root + 'dev/release.sh', 'utf8')))
 
   // 建委托有两条路：浏览器走 /handoff/create，agent 工具走 SHARED_TOOLS。
   // 曾经只有前者发通知，于是「用 agent 派活群里没动静、手动点界面却正常」。

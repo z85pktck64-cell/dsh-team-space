@@ -36,6 +36,10 @@ json.dump(pkg, open('package.json', 'w'), ensure_ascii=False, indent=2)
 open('package.json', 'a').write('\n')
 src = open('lib/client.js', encoding='utf-8').read()
 src = re.sub(r'团队空间 v[0-9][0-9.]* ·', f'团队空间 v{version} ·', src, count=1)
+# 客户端上报给宿主的版本号：不同步的话，升级完仍会被旧版本判定拦住
+src, swapped = re.subn(r"const PLUGIN_VERSION = '[0-9][0-9.]*'", f"const PLUGIN_VERSION = '{version}'", src, count=1)
+if swapped != 1:
+    raise SystemExit('找不到 const PLUGIN_VERSION，客户端版本号没同步')
 open('lib/client.js', 'w', encoding='utf-8').write(src)
 print(f'  {old} → {version}')
 PY

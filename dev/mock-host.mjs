@@ -608,6 +608,39 @@ const skillFile = join(home, 'skills', 'p0-installed-skill', 'SKILL.md')
 ok('D09 技能安装真的落盘', existsSync(skillFile) && readFileSync(skillFile, 'utf8') === 'P0 SKILL 正文',
   String(skillFile))
 
+// ---------- 场景 11：客户端版本闸门（强制一致） ----------
+// 旧客户端写不进去、读得到；同版本正常；不带版本头的（老客户端/curl/MCP/agent 工具）放行。
+console.log('客户端版本闸门')
+const hostVersion = (await call('list')).data.version?.host ?? ''
+ok('list 返回宿主版本', /^\d+\.\d+\.\d+$/.test(hostVersion), hostVersion)
+
+const staleWrite = await call('entry/upsert', {
+  table: 'repos', entry: { name: 'mock-stale-write', url: 'https://example.com/stale' },
+}, { ...TEST, 'x-team-space-version': '0.0.1' })
+ok('旧客户端写入被拒（UPGRADE_REQUIRED）', staleWrite.data.code === 'UPGRADE_REQUIRED', JSON.stringify(staleWrite.data))
+ok('被拒时带回了宿主版本（弹窗要显示）', staleWrite.data.hostVersion === hostVersion, String(staleWrite.data.hostVersion))
+
+const staleRead = await call('list', undefined, { 'x-team-space-version': '0.0.1' })
+ok('旧客户端读放行（读不会写坏数据）',
+  staleRead.data.ok === true && staleRead.data.version?.host === hostVersion)
+
+const freshWrite = await call('entry/upsert', {
+  table: 'repos', entry: { name: 'mock-fresh-write', url: 'https://example.com/fresh' },
+}, { ...TEST, 'x-team-space-version': hostVersion })
+ok('同版本客户端可写', freshWrite.data.ok === true, JSON.stringify(freshWrite.data).slice(0, 120))
+
+const legacyWrite = await call('entry/upsert', {
+  table: 'repos', entry: { name: 'mock-legacy-write', url: 'https://example.com/legacy' },
+}, TEST)
+ok('不带版本头的老客户端放行（服务端无法判断，只能放）', legacyWrite.data.ok === true,
+  JSON.stringify(legacyWrite.data).slice(0, 120))
+
+// 收尾
+for (const name of ['mock-stale-write', 'mock-fresh-write', 'mock-legacy-write']) {
+  const hit = ((await call('list', undefined, TEST)).data.tables?.repos ?? []).find(r => r.name === name)
+  if (hit) await call('entry/remove', { table: 'repos', id: hit.id }, TEST)
+}
+
 server.close()
 console.log(`\n结果：${checks - failed}/${checks} 通过${failed ? `，${failed} 条失败` : '，全部通过'}\n`)
 process.exit(failed ? 1 : 0)
