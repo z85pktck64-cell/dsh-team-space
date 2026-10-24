@@ -64,10 +64,11 @@
   .tab .n{color:var(--text-4);margin-left:5px}
 
   /* ---------- 卡片（对齐 .ts-session） ---------- */
-  .group-head{display:flex;align-items:baseline;gap:8px;margin:18px 0 8px;padding-left:2px;font-size:12px;color:var(--text-3);letter-spacing:.04em}
-  .group-head:first-child{margin-top:0}
-  .group-name{font-weight:600;color:var(--text-2)}
-  .group-count{opacity:.7}
+  .subbar{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px}
+  .subchip{appearance:none;border:1px solid var(--border);background:var(--bg-2);color:var(--text-2);
+    border-radius:999px;padding:6px 14px;font-size:12px;cursor:pointer;font-family:inherit}
+  .subchip:hover{color:var(--text-1);border-color:var(--border-strong)}
+  .subchip.is-on{background:var(--text-1);color:var(--bg-1);border-color:var(--text-1);font-weight:600}
   .list{display:flex;flex-direction:column;gap:10px}
   .card{
     display:grid;grid-template-columns:minmax(0,1fr) auto;gap:20px;
@@ -173,7 +174,7 @@
     var ids = ['skills', 'plugins', 'tasks', 'handoffs', 'repos']
     return ids.indexOf(want) >= 0 ? want : 'skills'
   }
-  var state = { data: null, tab: initialTab(), open: {}, details: {}, error: '', panel: false, team: null }
+  var state = { data: null, tab: initialTab(), open: {}, details: {}, error: '', panel: false, team: null, linkGroup: 'doc' }
 
   function el(tag, attrs, children) {
     var node = document.createElement(tag)
@@ -637,23 +638,30 @@
       box.appendChild(el('div', { class: 'empty', text: '这里还没有内容' }))
       return
     }
+    // 链接：横向子分类条（文档 / Wiki / 看板 / 其他 / Git），点一个只显示该类
+    if (tab.id === 'repos') {
+      var GROUP_LABEL = { doc: '文档', wiki: 'Wiki', board: '看板', other: '其他', git: 'Git' }
+      var counts = {}
+      rows.forEach(function (r) { var t = r.type || 'git'; counts[t] = (counts[t] || 0) + 1 })
+      var order = ['doc', 'wiki', 'board', 'other', 'git'].filter(function (t) { return counts[t] })
+      var current = state.linkGroup
+      if (order.indexOf(current) < 0) current = order[0] || 'git'
+      var strip = el('div', { class: 'subbar' })
+      order.forEach(function (t) {
+        var chip = el('button', {
+          class: 'subchip' + (t === current ? ' is-on' : ''),
+          type: 'button',
+          text: (GROUP_LABEL[t] || t) + ' ' + counts[t],
+        })
+        chip.addEventListener('click', function () { state.linkGroup = t; render() })
+        strip.appendChild(chip)
+      })
+      box.appendChild(strip)
+      rows = rows.filter(function (r) { return (r.type || 'git') === current })
+    }
+
     var list = el('div', { class: 'list' })
-    var GROUP_LABEL = { doc: '文档', wiki: 'Wiki', board: '看板', other: '其他', git: 'Git 仓库' }
-    var lastType = null
-    rows.forEach(function (row) {
-      if (tab.id === 'repos') {
-        var type = row.type || 'git'
-        if (type !== lastType) {
-          var count = rows.filter(function (r) { return (r.type || 'git') === type }).length
-          list.appendChild(el('div', { class: 'group-head' }, [
-            el('span', { class: 'group-name', text: GROUP_LABEL[type] || type }),
-            el('span', { class: 'group-count', text: String(count) }),
-          ]))
-          lastType = type
-        }
-      }
-      list.appendChild(renderItem(tab, row))
-    })
+    rows.forEach(function (row) { list.appendChild(renderItem(tab, row)) })
     box.appendChild(list)
   }
 

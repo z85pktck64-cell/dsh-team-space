@@ -241,11 +241,15 @@ async function runCrossEnd(base) {
 
   // 17) 链接按类型分组：文档最前（LINK_ORDER），两端都要有分组标题
   ok('客户端有链接分组顺序', /LINK_ORDER = \{ doc: 0, wiki: 1, board: 2, other: 3, git: 4 \}/.test(clientSrc))
-  ok('客户端有分组标题渲染', /ts-group-head/.test(clientSrc))
-  ok('门户页有分组标题渲染', /group-head/.test(portalSrc))
   ok('门户页有链接分组顺序', /LINK_ORDER = \{ doc: 0, wiki: 1, board: 2, other: 3, git: 4 \}/.test(portalSrc))
 
-  // 18) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
+  // 18) remove 必须支持按 table 删：原来写死只删 tasks，其他表点删除无效
+  ok('/remove 支持 table 参数', /const table = clip\(body\.table, 40\) \|\| 'tasks'/.test(indexSrc))
+  // 子分类横向：两端都用 chips 条
+  ok('客户端横向子分类', /ts-subbar/.test(clientSrc) && /ts-subchip/.test(clientSrc))
+  ok('门户页横向子分类', /subbar/.test(portalSrc) && /subchip/.test(portalSrc))
+
+  // 19) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
   let readme = ''
   try { readme = readFileSync(root + 'README.md', 'utf8') } catch { /* 没有就报红 */ }
   ok('README 保留三端同步约定', readme.includes('三个消费方'))
