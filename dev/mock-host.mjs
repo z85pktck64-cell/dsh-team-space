@@ -83,10 +83,15 @@ const server = createServer((req, res) => {
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
 const base = `http://127.0.0.1:${server.address().port}/api/team-space`
 
-async function call(path, body) {
+async function call(path, body, headers) {
+  const merged = {
+    accept: 'application/json',
+    ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    ...(headers ?? {}),
+  }
   const options = body === undefined
-    ? { headers: { accept: 'application/json' } }
-    : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }
+    ? { headers: merged }
+    : { method: 'POST', headers: merged, body: JSON.stringify(body) }
   const response = await fetch(`${base}/${path}`, options)
   const data = await response.json().catch(() => null)
   return { status: response.status, data }
@@ -305,6 +310,69 @@ const noRecord = await call('plugin/enable', { name: 'not-installed', checksum: 
 ok('没有安装记录不能启用', noRecord.data.code === 'NOT_FOUND', JSON.stringify(noRecord.data))
 const audit = await call('plugin/audit')
 ok('plugin/audit 有记录', audit.data.ok === true && typeof audit.data.entries === 'object')
+
+// ---------- 场景 10：测试通道与功能通道隔离 ----------
+// 为什么要在 mock 宿主里验：成员连的是主服务器，实测时所有读写都落在同一份 store 上。
+// 这里用临时 DSH_HOME，既验隔离逻辑，本身也不碰任何真实数据。
+console.log('测试通道 / 功能通道隔离')
+const TEST = { 'x-team-space-channel': 'test' }
+
+const realRepo = await call('entry/upsert', {
+  table: 'repos', entry: { name: 'mock-real-repo', url: 'https://example.com/real' },
+})
+const testRepo = await call('entry/upsert', {
+  table: 'repos', entry: { name: 'mock-test-repo', url: 'https://example.com/test' },
+}, TEST)
+ok('测试通道写入带 channel=test', testRepo.data.entry?.channel === 'test', String(testRepo.data.entry?.channel))
+ok('真实通道写入不带 channel 标', !realRepo.data.entry?.channel, String(realRepo.data.entry?.channel))
+
+const prodNames = ((await call('list')).data.tables?.repos ?? []).map(r => r.name)
+const testNames = ((await call('list', undefined, TEST)).data.tables?.repos ?? []).map(r => r.name)
+ok('测试记录不出现在真实列表', !prodNames.includes('mock-test-repo'), prodNames.join(','))
+ok('真实记录在真实列表里', prodNames.includes('mock-real-repo'))
+ok('测试通道同时看得到测试 + 真实记录',
+  testNames.includes('mock-test-repo') && testNames.includes('mock-real-repo'), testNames.join(','))
+ok('通道也能用 ?channel=test 指定（门户页走这条）',
+  ((await call('list?channel=test')).data.tables?.repos ?? []).some(r => r.name === 'mock-test-repo'))
+
+// mock 的 call 不抛错（返回 status/data），所以按状态码判，别照抄 selftest 的写法
+const detailDenied = await call(`detail?table=repos&id=${testRepo.data.entry.id}`)
+ok('真实通道取测试记录详情被拒',
+  Boolean(testRepo.data.entry.id) && detailDenied.data.ok === false,
+  JSON.stringify(detailDenied.data).slice(0, 120))
+
+const denyRemove = await call('entry/remove', { table: 'repos', id: realRepo.data.entry.id }, TEST)
+ok('测试通道删真实记录被拒', denyRemove.data.code === 'FORBIDDEN', JSON.stringify(denyRemove.data))
+const denyUpdate = await call('entry/upsert', {
+  table: 'repos', entry: { id: realRepo.data.entry.id, name: 'mock-real-repo', url: 'https://example.com/hacked' },
+}, TEST)
+ok('测试通道改真实记录被拒', denyUpdate.data.code === 'FORBIDDEN', JSON.stringify(denyUpdate.data))
+ok('被拒之后真实记录没被改动',
+  ((await call('list')).data.tables?.repos ?? []).find(r => r.id === realRepo.data.entry.id)?.url === 'https://example.com/real')
+
+// 测试通道建的委托：不进真实列表，也不能被真实通道认领
+const testHandoff = await call('handoff/create', { title: 'mock-test-handoff', brief: 'x', owner: '甲' }, TEST)
+ok('测试通道建的委托不进真实列表',
+  !((await call('list')).data.tables?.handoffs ?? []).some(h => h.id === testHandoff.data.id))
+ok('测试通道看得到自己的委托',
+  ((await call('list', undefined, TEST)).data.tables?.handoffs ?? []).some(h => h.id === testHandoff.data.id))
+
+// 会话分享没有逐个改路由，靠 route() 里的通道作用域兜 —— 这条就是验那个作用域
+const testShare = await call('share/submit', {
+  sessionId: 'mock-session-test-channel', title: 'mock-test-session', text: '测试通道会话',
+  uploader: { label: '甲', deviceId: 'dev-a' },
+}, TEST)
+ok('会话分享自动落测试通道（路由作用域生效）',
+  testShare.data.item?.channel === 'test', String(testShare.data.item?.channel))
+ok('测试通道分享的会话不进真实列表',
+  !((await call('list')).data.tables?.tasks ?? []).some(t => t.id === testShare.data.item?.id))
+
+const realHandoff = await call('handoff/create', { title: 'mock-real-handoff', brief: 'x', owner: '甲' })
+const denyClaim = await call('handoff/claim', { id: realHandoff.data.id, by: '乙' }, TEST)
+ok('测试通道认领真实委托被拒（「测试里点认领」绝不能等于真的认领）',
+  denyClaim.data.code === 'FORBIDDEN', JSON.stringify(denyClaim.data))
+ok('真实委托仍是 open（没被测试动作改掉）',
+  ((await call('list')).data.tables?.handoffs ?? []).find(h => h.id === realHandoff.data.id)?.status === 'open')
 
 server.close()
 console.log(`\n结果：${checks - failed}/${checks} 通过${failed ? `，${failed} 条失败` : '，全部通过'}\n`)

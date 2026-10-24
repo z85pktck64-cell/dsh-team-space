@@ -25,12 +25,20 @@ function ok(name, condition, detail = '') {
 /** 宿主 deviceId：删除委托只允许主服务器，所有 handoff/remove 都要带上它。 */
 let HOST_DEVICE = ''
 
-async function call(base, path, body) {
+/** 测试通道请求头：加了这个，读写都落在测试数据上，不碰真实数据。 */
+const TEST_HEADERS = { 'x-team-space-channel': 'test' }
+
+async function call(base, path, body, headers) {
   // 统一补设备身份，避免每个删除点都要记得传（漏一处就会被 403 打断整个自检）。
   if (path === 'handoff/remove' && body && !body.deviceId) body = { ...body, deviceId: HOST_DEVICE }
+  const merged = {
+    accept: 'application/json',
+    ...(body ? { 'content-type': 'application/json' } : {}),
+    ...(headers ?? {}),
+  }
   const options = body
-    ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }
-    : undefined
+    ? { method: 'POST', headers: merged, body: JSON.stringify(body) }
+    : { headers: merged }
   const response = await fetch(`${base}/${path}`, options)
   const data = await response.json().catch(() => null)
   if (!response.ok || data?.ok === false) {
@@ -42,10 +50,10 @@ async function call(base, path, body) {
 }
 
 /** 期望失败：返回 { code, status }，用于验证非法操作被拦住。 */
-async function callFail(base, path, body) {
+async function callFail(base, path, body, headers) {
   const response = await fetch(`${base}/${path}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...(headers ?? {}) },
     body: JSON.stringify(body ?? {}),
   })
   const data = await response.json().catch(() => null)
@@ -294,22 +302,26 @@ async function runCrossEnd(base) {
 }
 
 async function sweep(base) {
-  const list = await call(base, 'list')
   // 删除委托只允许主服务器，扫尾必须带上宿主 deviceId，否则会被 403 挡住（真实回归过一次）。
   const hostDevice = String((await call(base, 'gateway-status').catch(() => null))?.deviceId ?? '')
   let removed = 0
-  for (const [table, rows] of Object.entries(list.tables ?? {})) {
-    for (const row of rows ?? []) {
-      const hay = [row.title, row.name, row.note, row.brief, row.text, row.sessionId, row.owner]
-        .filter(Boolean).join(' ')
-      if (!/selftest|自检/i.test(hay)) continue
-      try {
-        if (table === 'handoffs') await call(base, 'handoff/remove', { id: row.id, deviceId: hostDevice, name: 'xinzhan' })
-        else if (table === 'tasks') await call(base, 'remove', { id: row.id })
-        else await call(base, 'entry/remove', { table, id: row.id })
-        removed += 1
-      } catch {
-        /* 已经没了 */
+  // 两个通道都要扫：测试通道的记录不在真实视图里，只扫一遍会留下残留。
+  // 而且必须用各自的通道去删 —— 真实通道看不见测试记录，会直接 NOT_FOUND。
+  for (const headers of [undefined, TEST_HEADERS]) {
+    const list = await call(base, 'list', undefined, headers).catch(() => null)
+    for (const [table, rows] of Object.entries(list?.tables ?? {})) {
+      for (const row of rows ?? []) {
+        const hay = [row.title, row.name, row.note, row.brief, row.text, row.sessionId, row.owner]
+          .filter(Boolean).join(' ')
+        if (!/selftest|自检/i.test(hay)) continue
+        try {
+          if (table === 'handoffs') await call(base, 'handoff/remove', { id: row.id, deviceId: hostDevice, name: 'xinzhan' }, headers)
+          else if (table === 'tasks') await call(base, 'remove', { id: row.id }, headers)
+          else await call(base, 'entry/remove', { table, id: row.id }, headers)
+          removed += 1
+        } catch {
+          /* 已经没了 */
+        }
       }
     }
   }
@@ -616,6 +628,84 @@ async function run(base) {
 
 }
 
+/**
+ * 通道隔离：实测造的数据不能进真实视图，测试通道也不能改动真实数据。
+ *
+ * 现实依据：成员（Neo 这类）连的是主服务器，实测时所有读写都落在**同一份** store 上。
+ * 没有通道的话，验一次功能就把真实的委托 / 链接列表弄乱一次，企微群还会收到假通知。
+ */
+async function runChannelIsolation(base) {
+  const root = fileURLToPath(new URL('..', import.meta.url))
+  const indexSrc = readFileSync(root + 'lib/index.js', 'utf8')
+  const clientSrc = readFileSync(root + 'lib/client.js', 'utf8')
+  const portalSrc = readFileSync(root + 'lib/portal.html', 'utf8')
+  const stdioSrc = readFileSync(root + 'dev/mcp-server.mjs', 'utf8')
+
+  const stamp = `自检-tmp-通道隔离-${Date.now()}`
+  const created = await call(base, 'entry/upsert', {
+    table: 'repos',
+    entry: { name: stamp, url: 'https://example.com/selftest-channel', description: '自检通道隔离' },
+  }, TEST_HEADERS)
+  const testId = String(created?.entry?.id ?? '')
+  ok('测试通道写入的记录带 channel=test 标',
+    created?.entry?.channel === 'test', `实际 ${created?.entry?.channel}`)
+
+  const prodAfter = await call(base, 'list')
+  ok('测试通道的数据不出现在真实列表',
+    !!testId && !(prodAfter.tables?.repos ?? []).some(row => row.id === testId),
+    `真实视图 repos ${(prodAfter.tables?.repos ?? []).length} 条`)
+
+  const testAfter = await call(base, 'list', undefined, TEST_HEADERS)
+  ok('测试通道能看到刚写的数据',
+    (testAfter.tables?.repos ?? []).some(row => row.id === testId))
+  ok('测试通道同时看得到真实数据（拿真实数据当背景）',
+    (testAfter.tables?.repos ?? []).length > (prodAfter.tables?.repos ?? []).length,
+    `测试 ${(testAfter.tables?.repos ?? []).length} 条 / 真实 ${(prodAfter.tables?.repos ?? []).length} 条`)
+
+  // 只过滤列表、漏了 detail，等于数据还是漏了 —— 这条专门盯那个漏洞
+  let detailHidden = false
+  try {
+    await call(base, `detail?table=repos&id=${encodeURIComponent(testId)}`)
+  } catch {
+    detailHidden = true
+  }
+  ok('真实通道连详情都取不到测试记录', detailHidden && !!testId)
+
+  const realRepo = (prodAfter.tables?.repos ?? [])[0]
+  if (realRepo) {
+    const denial = await callFail(base, 'entry/remove', { table: 'repos', id: realRepo.id }, TEST_HEADERS)
+    ok('测试通道删真实记录被拒（403 FORBIDDEN）',
+      denial.status === 403 && denial.code === 'FORBIDDEN',
+      `实际 ${denial.status} ${denial.code}`)
+    const still = await call(base, 'list')
+    ok('被拒之后真实记录还在（没有删一半）',
+      (still.tables?.repos ?? []).some(row => row.id === realRepo.id))
+  } else {
+    console.log('  - 跳过：repos 表为空，没有真实记录可验证跨通道保护')
+  }
+
+  // 收尾：测试记录自己删掉，不给下一次自检留垃圾
+  await call(base, 'entry/remove', { table: 'repos', id: testId }, TEST_HEADERS).catch(() => null)
+
+  // ---- 静态：三端都得真的把通道带上，否则通道只活在服务端 ----
+  ok('服务端同时认 header 与 query 两种通道来源',
+    /x-team-space-channel/.test(indexSrc) && /searchParams\.get\('channel'\)/.test(indexSrc))
+  ok('服务端给新记录自动打通道标（不靠每个路由自己记得）',
+    /const seen = new Set\(\)/.test(indexSrc) && /entry\.channel = CHANNEL_TEST/.test(indexSrc))
+  ok('委托通知对测试记录直接不发（不骚扰真实群）',
+    /if \(entryChannel\(handoff\) === CHANNEL_TEST\) return/.test(indexSrc))
+  ok('委托写路由有跨通道守卫（测试通道改不动真实委托）',
+    (indexSrc.match(/assertChannelWritable\(record, channel\)/g) ?? []).length >= 4)
+  ok('客户端请求带 x-team-space-channel 头',
+    /x-team-space-channel/.test(clientSrc) && /readChannel\(\) === 'test'/.test(clientSrc))
+  ok('客户端有切通道入口与测试态标识',
+    /ts-channel-pill/.test(clientSrc) && /switchChannel/.test(clientSrc))
+  ok('门户页支持 ?channel=test 并显示测试横幅',
+    /CHANNEL === 'test'/.test(portalSrc) && /test-banner/.test(portalSrc))
+  ok('MCP stdio 支持 TEAM_SPACE_CHANNEL=test',
+    /TEAM_SPACE_CHANNEL/.test(stdioSrc) && /channel:/.test(stdioSrc))
+}
+
 async function main() {
   const { port, base } = await findBase(process.argv[2])
   console.log(`\n团队空间自检 · 端口 ${port}\n`)
@@ -624,6 +714,7 @@ async function main() {
   try {
     await run(base)
     await runCrossEnd(base)
+    await runChannelIsolation(base)
   } finally {
     try {
       const removed = await sweep(base)

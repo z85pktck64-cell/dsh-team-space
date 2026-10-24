@@ -21,6 +21,7 @@
  *   TEAM_SPACE_URL        团队空间网关地址（默认 http://127.0.0.1:8080）
  *   TEAM_SPACE_DEVICE_ID  调用者设备 id（写操作要用；默认 'codex'）
  *   TEAM_SPACE_USER       调用者显示名（默认 'MCP 客户端'）
+ *   TEAM_SPACE_CHANNEL    'test' 时写入进测试通道（实测用，不污染真实数据）
  */
 
 import { createHandlers, handleRpc } from '../lib/mcp-tools.js'
@@ -30,6 +31,8 @@ const handlers = createHandlers({
   apiBase: `${BASE}/api/team-space`,
   device: process.env.TEAM_SPACE_DEVICE_ID || 'codex',
   user: process.env.TEAM_SPACE_USER || 'MCP 客户端',
+  // 实测用：TEAM_SPACE_CHANNEL=test 让写入进测试通道，不污染真实数据、不发企微通知
+  channel: String(process.env.TEAM_SPACE_CHANNEL ?? '').trim().toLowerCase() === 'test' ? 'test' : 'prod',
 })
 
 function send(payload) {

@@ -41,6 +41,10 @@ print(f'  {old} → {version}')
 PY
 
 echo "== 2/5 离线自检 =="
+# 两个都要跑，各自证明不同的事：
+#   mock-host —— 用临时 DSH_HOME 真跑**这份源码**，不重启 DSH 就能验宿主半的新逻辑
+#   selftest  —— 打本机**运行中**的宿主，证明线上那份没坏（刚改完还没重启时它会落后一个版本）
+node dev/mock-host.mjs 2>&1 | tail -2
 node dev/selftest.mjs 2>&1 | tail -2
 
 echo "== 3/5 打包 =="

@@ -26,6 +26,9 @@
 
   /* ---------- 顶栏 ---------- */
   header{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:22px;padding-bottom:18px;border-bottom:1px solid var(--border)}
+  .test-banner{margin:0 0 14px;padding:9px 14px;border-radius:10px;
+    font-size:13px;font-weight:700;letter-spacing:.01em;
+    color:#8a4b00;background:#fff4e0;border:1px solid #f5c87a}
   .brand{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
   h1{margin:0;font-size:24px;font-weight:600;letter-spacing:-.01em}
   .sub{color:var(--text-3);font-size:12.5px}
@@ -138,6 +141,7 @@
 <body>
 <div class="wrap">
   <header>
+    <div class="test-banner" id="test-banner" hidden>测试通道 · 以下是实测数据，不是团队真实内容</div>
     <div class="brand">
       <h1>团队空间</h1>
       <button class="icon-btn" id="refresh" type="button" title="刷新" aria-label="刷新">
@@ -158,6 +162,14 @@
 <script>
 (function () {
   var API = '/api/team-space'
+  // 通道：?channel=test 打开测试通道，看的是实测数据（含真实数据当背景）。
+  // 门户只读，切通道不会写任何东西，纯粹是「验 UI 时别把测试数据当真实内容看」。
+  var CHANNEL = new URLSearchParams(location.search).get('channel') === 'test' ? 'test' : 'prod'
+  function apiHeaders() {
+    return CHANNEL === 'test'
+      ? { accept: 'application/json', 'x-team-space-channel': 'test' }
+      : { accept: 'application/json' }
+  }
   var TABS = [
     { id: 'skills', label: '技能', key: 'skills' },
     { id: 'plugins', label: '插件', key: 'plugins' },
@@ -390,7 +402,7 @@
   /* ---------------- 数据 ---------------- */
   function detailFor(tab, row) {
     var table = tab.id === 'tasks' ? 'tasks' : tab.id
-    return fetch(API + '/detail?table=' + encodeURIComponent(table) + '&id=' + encodeURIComponent(row.id))
+    return fetch(API + '/detail?table=' + encodeURIComponent(table) + '&id=' + encodeURIComponent(row.id), { headers: apiHeaders() })
       .then(function (r) { return r.json() })
       .then(function (json) { return json.entry || {} })
   }
@@ -673,12 +685,13 @@
   }
 
   function load() {
-    fetch(API + '/list')
+    fetch(API + '/list', { headers: apiHeaders() })
       .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json() })
       .then(function (json) { state.data = json; state.error = ''; render() })
       .catch(function (error) { state.error = error.message; render() })
   }
 
+  if (CHANNEL === 'test') document.getElementById('test-banner').hidden = false
   renderMe()
   loadTeam()
   document.addEventListener('click', function () {
