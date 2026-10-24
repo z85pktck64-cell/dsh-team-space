@@ -276,7 +276,7 @@ async function runCrossEnd(base) {
 
   // 24) @ 菜单里能 @ 到成员，选中后插入派委托的模板
   ok('@ 菜单含成员来源', /kind: 'member'/.test(clientSrc) && /团队空间 · 成员/.test(clientSrc))
-  ok('选中成员插入派委托模板', /给「\$\{candidate\.name\}」派一个委托/.test(clientSrc))
+  ok('选中成员插入派委托模板（只留事项）', /派一个委托，事项：/.test(clientSrc))
 
   // 25) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
   let readme = ''
