@@ -274,7 +274,11 @@ async function runCrossEnd(base) {
   // 23) @ 注册要有 try/catch：宿主服务未来改名时只损失那一组，面板不能跟着挂
   ok('@ 来源注册有 try/catch 保护', /@ 来源注册失败，@ 菜单里不会有团队空间这一组/.test(clientSrc))
 
-  // 24) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
+  // 24) @ 菜单里能 @ 到成员，选中后插入派委托的模板
+  ok('@ 菜单含成员来源', /kind: 'member'/.test(clientSrc) && /团队空间 · 成员/.test(clientSrc))
+  ok('选中成员插入派委托模板', /给「\$\{candidate\.name\}」派一个委托/.test(clientSrc))
+
+  // 25) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
   let readme = ''
   try { readme = readFileSync(root + 'README.md', 'utf8') } catch { /* 没有就报红 */ }
   ok('README 保留三端同步约定', readme.includes('三个消费方'))
