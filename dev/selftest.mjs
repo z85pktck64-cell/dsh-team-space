@@ -278,7 +278,13 @@ async function runCrossEnd(base) {
   ok('@ 菜单含成员来源', /kind: 'member'/.test(clientSrc) && /团队空间 · 成员/.test(clientSrc))
   ok('选中成员插入派委托模板（只留事项）', /派一个委托，事项：/.test(clientSrc))
 
-  // 25) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
+  // 25) 委托通知 + 侧栏角标
+  ok('委托创建会触发通知', /void notifyHandoff\(record\)/.test(indexSrc))
+  ok('通知走企微群机器人且只认官方域名',
+    /qyapi\\.weixin\\.qq\\.com/.test(indexSrc) && /notify\.wecomWebhook/.test(indexSrc))
+  ok('侧栏有委托数角标', /ts-nav-badge/.test(clientSrc) && /item\.status === 'open'/.test(clientSrc))
+
+  // 26) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
   let readme = ''
   try { readme = readFileSync(root + 'README.md', 'utf8') } catch { /* 没有就报红 */ }
   ok('README 保留三端同步约定', readme.includes('三个消费方'))
