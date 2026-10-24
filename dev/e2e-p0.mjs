@@ -194,6 +194,22 @@ async function main() {
   ok('测试通道无残留', leftoverSkills.length === 0 && leftoverHandoffs.length === 0,
     `skills=${leftoverSkills.length} handoffs=${leftoverHandoffs.length}`)
 
+  // CORS 预检：浏览器跨源时会先发 OPTIONS，服务端必须放行客户端真正带的 header。
+  // curl / Node fetch 不做预检 —— 这正是「本机全绿、成员那边显示连不上」的根因，必须单独验。
+  const preflight = await fetch(`${base}/list`, {
+    method: 'OPTIONS',
+    headers: {
+      origin: 'dsh-app://app',
+      'access-control-request-method': 'GET',
+      'access-control-request-headers': 'x-team-space-version, x-team-space-channel',
+    },
+  })
+  const allowedHeaders = String(preflight.headers.get('access-control-allow-headers') ?? '').toLowerCase()
+  ok('CORS 预检放行 x-team-space-version（跨源成员必需）',
+    allowedHeaders.includes('x-team-space-version'), allowedHeaders)
+  ok('CORS 预检放行 x-team-space-channel',
+    allowedHeaders.includes('x-team-space-channel'), allowedHeaders)
+
   console.log(`\n结果：${checks - failures}/${checks} 通过${failures ? `，${failures} 条失败` : '，全部通过'}\n`)
   process.exit(failures ? 1 : 0)
 }

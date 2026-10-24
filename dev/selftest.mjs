@@ -728,6 +728,16 @@ async function runChannelIsolation(base) {
   ok('发版脚本会同步客户端版本常量',
     /const PLUGIN_VERSION/.test(readFileSync(root + 'dev/release.sh', 'utf8')))
 
+  // CORS 预检的根治检查：客户端在 call() 里加的每个 x-team-space-* header，
+  // 服务端 access-control-allow-headers 都必须放行。漏一个的后果是所有成员
+  // 跨源请求直接失败、界面显示「连不上」，而本机同源完全看不出来。
+  const clientAdded = [...new Set([...clientSrc.matchAll(/headers\['(x-team-space-[a-z-]+)'\]/g)].map(m => m[1]))]
+  const corsList = (indexSrc.match(/const CORS_ALLOW_HEADERS = '([^']+)'/) ?? [])[1] ?? ''
+  const notAllowed = clientAdded.filter(name => !corsList.includes(name))
+  ok('客户端带的每个自定义 header 都被 CORS 预检放行',
+    clientAdded.length > 0 && notAllowed.length === 0,
+    notAllowed.length ? `没放行：${notAllowed.join(', ')}` : `客户端带 ${clientAdded.join(', ')}`)
+
   // 建委托有两条路：浏览器走 /handoff/create，agent 工具走 SHARED_TOOLS。
   // 曾经只有前者发通知，于是「用 agent 派活群里没动静、手动点界面却正常」。
   const notifyCalls = (indexSrc.match(/notifyHandoff\(record\)/g) ?? []).length
