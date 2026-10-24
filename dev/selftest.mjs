@@ -271,7 +271,10 @@ async function runCrossEnd(base) {
   ok('@ 来源内部按匹配度打分（精确 > 前缀 > 包含）',
     /if \(name === needle\) score = 0/.test(clientSrc) && /scored\.sort/.test(clientSrc))
 
-  // 23) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
+  // 23) @ 注册要有 try/catch：宿主服务未来改名时只损失那一组，面板不能跟着挂
+  ok('@ 来源注册有 try/catch 保护', /@ 来源注册失败，@ 菜单里不会有团队空间这一组/.test(clientSrc))
+
+  // 24) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
   let readme = ''
   try { readme = readFileSync(root + 'README.md', 'utf8') } catch { /* 没有就报红 */ }
   ok('README 保留三端同步约定', readme.includes('三个消费方'))
