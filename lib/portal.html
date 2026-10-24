@@ -64,6 +64,10 @@
   .tab .n{color:var(--text-4);margin-left:5px}
 
   /* ---------- 卡片（对齐 .ts-session） ---------- */
+  .group-head{display:flex;align-items:baseline;gap:8px;margin:18px 0 8px;padding-left:2px;font-size:12px;color:var(--text-3);letter-spacing:.04em}
+  .group-head:first-child{margin-top:0}
+  .group-name{font-weight:600;color:var(--text-2)}
+  .group-count{opacity:.7}
   .list{display:flex;flex-direction:column;gap:10px}
   .card{
     display:grid;grid-template-columns:minmax(0,1fr) auto;gap:20px;
@@ -624,12 +628,32 @@
     }
     var tab = TABS.filter(function (t) { return t.id === state.tab })[0]
     var rows = (state.data.tables[tab.key] || []).slice().sort(function (a, b) { return lastTouched(b) - lastTouched(a) })
+    // 「链接」按类型分组：文档最前，Git 最后（git 更偏工程，日常看文档多）
+    if (tab.id === 'repos') {
+      var LINK_ORDER = { doc: 0, wiki: 1, board: 2, other: 3, git: 4 }
+      rows.sort(function (a, b) { return (LINK_ORDER[a.type] || 3) - (LINK_ORDER[b.type] || 3) })
+    }
     if (!rows.length) {
       box.appendChild(el('div', { class: 'empty', text: '这里还没有内容' }))
       return
     }
     var list = el('div', { class: 'list' })
-    rows.forEach(function (row) { list.appendChild(renderItem(tab, row)) })
+    var GROUP_LABEL = { doc: '文档', wiki: 'Wiki', board: '看板', other: '其他', git: 'Git 仓库' }
+    var lastType = null
+    rows.forEach(function (row) {
+      if (tab.id === 'repos') {
+        var type = row.type || 'git'
+        if (type !== lastType) {
+          var count = rows.filter(function (r) { return (r.type || 'git') === type }).length
+          list.appendChild(el('div', { class: 'group-head' }, [
+            el('span', { class: 'group-name', text: GROUP_LABEL[type] || type }),
+            el('span', { class: 'group-count', text: String(count) }),
+          ]))
+          lastType = type
+        }
+      }
+      list.appendChild(renderItem(tab, row))
+    })
     box.appendChild(list)
   }
 

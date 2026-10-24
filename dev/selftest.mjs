@@ -218,7 +218,7 @@ async function runCrossEnd(base) {
 
   // 14) toast 只能有一份定义，且动画每帧都要带 -50%：
   //     两份并存时后定义的 animation 会覆盖 translateX(-50%)，toast 左边缘贴中线，位置随文本长度变
-  const toastDefs = (clientSrc.match(/^\.ts-toast\{/gm) ?? []).length
+  const toastDefs = (clientSrc.match(/^\.ts-toast\{/gm) ?? []).length   // 只认行首无缩进的顶层定义
   ok('toast 只有一份 CSS 定义', toastDefs === 1, `实际 ${toastDefs} 份`)
   ok('toast 动画每帧都带 -50%（否则居中会丢）',
     /@keyframes ts-toast-in\{from\{opacity:0;transform:translate\(-50%/.test(clientSrc)
@@ -239,7 +239,13 @@ async function runCrossEnd(base) {
   ok('门户页 tab 已改名「链接」', /label: '链接'/.test(portalSrc))
   ok('DSH 客户端 tab 已改名「链接」', /label: '链接'/.test(clientSrc))
 
-  // 17) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
+  // 17) 链接按类型分组：文档最前（LINK_ORDER），两端都要有分组标题
+  ok('客户端有链接分组顺序', /LINK_ORDER = \{ doc: 0, wiki: 1, board: 2, other: 3, git: 4 \}/.test(clientSrc))
+  ok('客户端有分组标题渲染', /ts-group-head/.test(clientSrc))
+  ok('门户页有分组标题渲染', /group-head/.test(portalSrc))
+  ok('门户页有链接分组顺序', /LINK_ORDER = \{ doc: 0, wiki: 1, board: 2, other: 3, git: 4 \}/.test(portalSrc))
+
+  // 18) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
   let readme = ''
   try { readme = readFileSync(root + 'README.md', 'utf8') } catch { /* 没有就报红 */ }
   ok('README 保留三端同步约定', readme.includes('三个消费方'))
