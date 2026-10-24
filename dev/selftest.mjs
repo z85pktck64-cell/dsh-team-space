@@ -266,7 +266,10 @@ async function runCrossEnd(base) {
 
   // 22) 输入框 @ 菜单：团队空间对象排在技能之后、文件之前
   ok('客户端 inject inputTriggers', /inject: \['slots', 'uiWorkspace', 'sessions', 'inputTriggers'\]/.test(clientSrc))
-  ok('注册了 @ 来源且 order 在文件之前', /name: 'team-space'/.test(clientSrc) && /order: -5/.test(clientSrc))
+  ok('@ 来源 order -20（排在技能 -10 与文件 0 之前）',
+    /name: 'team-space'/.test(clientSrc) && /order: -20/.test(clientSrc))
+  ok('@ 来源内部按匹配度打分（精确 > 前缀 > 包含）',
+    /if \(name === needle\) score = 0/.test(clientSrc) && /scored\.sort/.test(clientSrc))
 
   // 23) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
   let readme = ''
