@@ -69,21 +69,6 @@
     border-radius:999px;padding:6px 14px;font-size:12px;cursor:pointer;font-family:inherit}
   .subchip:hover{color:var(--text-1);border-color:var(--border-strong)}
   .subchip.is-on{background:var(--text-1);color:var(--bg-1);border-color:var(--text-1);font-weight:600}
-  .subbar-sep{width:1px;height:20px;background:var(--border);margin:0 4px;align-self:center}
-  .subchip-add{border-style:dashed;color:var(--text-3)}
-  .subchip-add:hover{color:var(--text-1);border-color:var(--border-strong);border-style:solid}
-
-  .add-mask{position:fixed;inset:0;background:rgba(0,0,0,.5);display:grid;place-items:center;z-index:200;padding:24px}
-  .add-dialog{width:min(92vw,420px);background:var(--bg-1);border:1px solid var(--border-strong);border-radius:14px;padding:22px;box-shadow:var(--shadow-2)}
-  .add-title{font-size:16px;font-weight:600;margin-bottom:16px;color:var(--text-1)}
-  .add-label{font-size:12px;color:var(--text-3);margin:12px 0 6px}
-  .add-input{width:100%;padding:9px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg-2);color:var(--text-1);font-size:14px;font-family:inherit}
-  .add-input:focus{outline:none;border-color:var(--accent)}
-  .add-tip{min-height:18px;margin-top:10px;font-size:12px;color:#FF9636}
-  .add-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:16px}
-  .add-btn{appearance:none;padding:8px 18px;border-radius:8px;border:1px solid var(--border);background:var(--bg-2);color:var(--text-1);font-size:13px;cursor:pointer;font-family:inherit}
-  .add-btn-primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
-
   .list{display:flex;flex-direction:column;gap:10px}
   .card{
     display:grid;grid-template-columns:minmax(0,1fr) auto;gap:20px;
@@ -353,65 +338,6 @@
   }
 
   /* ---------------- 复制（三级兜底） ---------------- */
-  /** 添加一条链接：名称 + URL + 类型，提交到 /entry/upsert */
-  function openLinkForm(defaultType) {
-    var mask = el('div', { class: 'add-mask' })
-    var dialog = el('div', { class: 'add-dialog' })
-    var nameInput = el('input', { class: 'add-input', placeholder: '名称，例如「车机需求看板」' })
-    var urlInput = el('input', { class: 'add-input', placeholder: 'https://…' })
-    var typeSel = el('select', { class: 'add-input' })
-    ;[['doc', '文档'], ['wiki', 'Wiki'], ['board', '看板'], ['other', '其他'], ['git', 'Git 仓库']].forEach(function (pair) {
-      var opt = el('option', { value: pair[0], text: pair[1] })
-      if (pair[0] === (defaultType || 'doc')) opt.selected = true
-      typeSel.appendChild(opt)
-    })
-    var tip = el('div', { class: 'add-tip' })
-    function close() { if (mask.parentNode) mask.parentNode.removeChild(mask) }
-    function submit() {
-      var name = nameInput.value.trim()
-      var url = urlInput.value.trim()
-      if (!name) { tip.textContent = '名称不能为空'; return }
-      if (!/^https?:\/\//i.test(url)) { tip.textContent = '链接要以 http:// 或 https:// 开头'; return }
-      tip.textContent = '保存中…'
-      var me = readMe()
-      fetch(API + '/entry/upsert', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          table: 'repos',
-          entry: { name: name, url: url, type: typeSel.value, owner: me.name || '', description: '' },
-        }),
-      }).then(function (r) { return r.json() })
-        .then(function (json) {
-          if (!json || json.ok === false) throw new Error((json && json.error) || '保存失败')
-          close()
-          state.linkGroup = typeSel.value
-          load()
-        })
-        .catch(function (error) { tip.textContent = error.message })
-    }
-    dialog.appendChild(el('div', { class: 'add-title', text: '添加链接' }))
-    dialog.appendChild(el('div', { class: 'add-label', text: '名称' }))
-    dialog.appendChild(nameInput)
-    dialog.appendChild(el('div', { class: 'add-label', text: '链接' }))
-    dialog.appendChild(urlInput)
-    dialog.appendChild(el('div', { class: 'add-label', text: '类型' }))
-    dialog.appendChild(typeSel)
-    dialog.appendChild(tip)
-    var actions = el('div', { class: 'add-actions' })
-    var cancel = el('button', { class: 'add-btn', type: 'button', text: '取消' })
-    cancel.addEventListener('click', close)
-    var save = el('button', { class: 'add-btn add-btn-primary', type: 'button', text: '保存' })
-    save.addEventListener('click', submit)
-    actions.appendChild(cancel)
-    actions.appendChild(save)
-    dialog.appendChild(actions)
-    mask.appendChild(dialog)
-    mask.addEventListener('click', function (event) { if (event.target === mask) close() })
-    document.body.appendChild(mask)
-    nameInput.focus()
-  }
-
   function copy(text, okMessage) {
     var done = function () { toast(okMessage || '已复制') }
     var fail = function () { showManualCopy(text) }
@@ -730,11 +656,7 @@
         chip.addEventListener('click', function () { state.linkGroup = t; render() })
         strip.appendChild(chip)
       })
-      // 末尾的「+」：加一条链接（写入口，和只读页面区分开，带分隔线）
-      strip.appendChild(el('span', { class: 'subbar-sep' }))
-      var addBtn = el('button', { class: 'subchip subchip-add', type: 'button', text: '+ 添加' })
-      addBtn.addEventListener('click', function () { openLinkForm(current) })
-      strip.appendChild(addBtn)
+      // 门户页是只读的：不加「+」。写入入口只在 DSH 插件和 MCP 工具里。
       box.appendChild(strip)
       rows = rows.filter(function (r) { return (r.type || 'git') === current })
     }

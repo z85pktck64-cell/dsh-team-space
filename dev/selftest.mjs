@@ -249,9 +249,12 @@ async function runCrossEnd(base) {
   ok('客户端横向子分类', /ts-subbar/.test(clientSrc) && /ts-subchip/.test(clientSrc))
   ok('门户页横向子分类', /subbar/.test(portalSrc) && /subchip/.test(portalSrc))
 
-  // 19) 「+ 添加」两端都要有：门户页在 chips 末尾，客户端在列表底部
-  ok('门户页有「+ 添加」入口', /subchip-add/.test(portalSrc) && /openLinkForm/.test(portalSrc))
-  ok('客户端有「+ 添加链接」入口', /ts-add-row/.test(clientSrc) && /setEditing\(\{\}\)/.test(clientSrc))
+  // 19) 「+」只在 DSH 客户端和 MCP：门户页必须保持只读
+  ok('门户页是只读的（没有 + 入口）',
+    !/subchip-add/.test(portalSrc) && !/openLinkForm/.test(portalSrc)
+    && /只读/.test(portalSrc))
+  ok('客户端「+」在子分类条末尾', /ts-subchip-add/.test(clientSrc) && /setEditing\(\{\}\)/.test(clientSrc))
+  ok('MCP share_repo 支持写链接', /team_space_share_repo/.test(indexSrc))
 
   // 20) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
   let readme = ''
