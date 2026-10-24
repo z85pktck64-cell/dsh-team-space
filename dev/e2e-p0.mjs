@@ -194,6 +194,15 @@ async function main() {
   ok('测试通道无残留', leftoverSkills.length === 0 && leftoverHandoffs.length === 0,
     `skills=${leftoverSkills.length} handoffs=${leftoverHandoffs.length}`)
 
+  // 一键更新的前置：本机必须能报出真实安装路径，否则客户端会按短名装成第二份
+  const localSelf = await call(base, 'local-state?plugins=dsh-team-space')
+  const selfPath = localSelf?.plugins?.['dsh-team-space']?.installedPath
+  ok('/local-state 返回本机安装路径（一键更新靠它定位）',
+    /^[@a-zA-Z0-9][\w@/.\-]*$/.test(String(selfPath ?? '')), String(selfPath || '(空)'))
+  const listedPlugin = (await call(base, 'list')).tables?.plugins?.find(item => item.name === 'dsh-team-space')
+  ok('/list 的插件条目带 downloadUrl（一键更新直接用它）',
+    /^https?:\/\//.test(String(listedPlugin?.downloadUrl ?? '')), String(listedPlugin?.downloadUrl || '(空)'))
+
   // CORS 预检：浏览器跨源时会先发 OPTIONS，服务端必须放行客户端真正带的 header。
   // curl / Node fetch 不做预检 —— 这正是「本机全绿、成员那边显示连不上」的根因，必须单独验。
   const preflight = await fetch(`${base}/list`, {

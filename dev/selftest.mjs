@@ -734,6 +734,17 @@ async function runChannelIsolation(base) {
   const clientAdded = [...new Set([...clientSrc.matchAll(/headers\['(x-team-space-[a-z-]+)'\]/g)].map(m => m[1]))]
   const corsList = (indexSrc.match(/const CORS_ALLOW_HEADERS = '([^']+)'/) ?? [])[1] ?? ''
   const notAllowed = clientAdded.filter(name => !corsList.includes(name))
+  // 一键更新：弹窗里点「立即更新」调的是**本机** DSH 的两段式安装接口，
+  // 不是主服务器的 —— 装到成员自己的 profile 才算更新。
+  ok('升级弹窗给的是「立即更新」，不是复制命令',
+    /runUpgrade/.test(clientSrc) && /'立即更新'/.test(clientSrc) && /callLocal\('install-plugin'/.test(clientSrc))
+  ok('一键更新走本机两段式（install-plugin → plugin/enable）',
+    /callLocal\('install-plugin'/.test(clientSrc) && /callLocal\('plugin\/enable'/.test(clientSrc))
+  ok('/local-state 给出本机真实安装路径（否则会装成第二份）',
+    /installedPath/.test(indexSrc) && /relative\(base, dir\)/.test(indexSrc))
+  ok('/list 的插件条目带 downloadUrl（供一键更新直接用）',
+    /downloadUrl/.test(indexSrc) && /entry\.installCommand \?\? ''\)\.match/.test(indexSrc))
+
   ok('客户端带的每个自定义 header 都被 CORS 预检放行',
     clientAdded.length > 0 && notAllowed.length === 0,
     notAllowed.length ? `没放行：${notAllowed.join(', ')}` : `客户端带 ${clientAdded.join(', ')}`)
