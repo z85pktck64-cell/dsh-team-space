@@ -158,10 +158,18 @@
     { id: 'plugins', label: '插件', key: 'plugins' },
     { id: 'tasks', label: '会话', key: 'tasks' },
     { id: 'handoffs', label: '委托', key: 'handoffs' },
-    { id: 'repos', label: '仓库', key: 'repos' }
+    { id: 'repos', label: '链接', key: 'repos' }
   ]
   var ME_KEY = 'team-space-portal:me'
-  var state = { data: null, tab: 'skills', open: {}, details: {}, error: '', panel: false, team: null }
+  // 支持 #repos 或 ?tab=repos 直达：把链接发给同事时能直接落到某一张表
+  function initialTab() {
+    var byHash = (location.hash || '').replace('#', '').trim()
+    var byQuery = new URLSearchParams(location.search).get('tab') || ''
+    var want = byHash || byQuery
+    var ids = ['skills', 'plugins', 'tasks', 'handoffs', 'repos']
+    return ids.indexOf(want) >= 0 ? want : 'skills'
+  }
+  var state = { data: null, tab: initialTab(), open: {}, details: {}, error: '', panel: false, team: null }
 
   function el(tag, attrs, children) {
     var node = document.createElement(tag)
@@ -450,10 +458,13 @@
   }
 
   function quickCopyButton(tab, row) {
-    var verb = tab.id === 'handoffs' ? '复制认领' : tab.id === 'plugins' ? '复制安装' : '复制'
+    // 链接类（doc/wiki/board/other）直接打开；git 仍复制克隆指令
+    var isOpenLink = tab.id === 'repos' && row.type && row.type !== 'git' && !!row.url
+    var verb = isOpenLink ? '打开' : tab.id === 'handoffs' ? '复制认领' : tab.id === 'plugins' ? '复制安装' : '复制'
     var btn = el('button', { class: 'btn btn-sm', type: 'button', text: verb })
     btn.addEventListener('click', function (event) {
       event.stopPropagation()
+      if (isOpenLink) { window.open(row.url, '_blank', 'noopener'); return }
       if (tab.id === 'handoffs') {
         var me = readMe()
         var who = me.name ? '认领人：' + me.name + '。' : ''
@@ -461,7 +472,7 @@
         return
       }
       if (tab.id === 'plugins') { copy(row.installCommand || '', '安装命令已复制'); return }
-      if (tab.id === 'repos') { copy(row.url || '', '仓库地址已复制'); return }
+      if (tab.id === 'repos') { copy(row.url || '', (row.type && row.type !== 'git') ? '链接已复制' : '仓库地址已复制'); return }
       btn.disabled = true
       btn.textContent = '读取中…'
       detailFor(tab, row).then(function (entry) {
@@ -528,7 +539,21 @@
       actions.appendChild(buttonEl('复制安装命令', function () { copy(row.installCommand) }))
     }
     if (tab.id === 'repos' && row.url) {
-      actions.appendChild(buttonEl('复制仓库地址', function () { copy(row.url) }))
+      var linkType = row.type || 'git'
+      if (linkType === 'git') {
+        actions.appendChild(buttonEl('复制克隆指令', function () {
+          copy('请把 ' + row.url + ' 克隆到当前工作区，读 README，然后告诉我构建方式和产物 APK 路径。')
+        }))
+      } else {
+        var open = document.createElement('a')
+        open.className = 'btn'
+        open.href = row.url
+        open.target = '_blank'
+        open.rel = 'noopener noreferrer'
+        open.textContent = '打开'
+        actions.appendChild(open)
+      }
+      actions.appendChild(buttonEl('复制链接', function () { copy(row.url) }))
     }
     if (actions.childNodes.length) wrap.appendChild(actions)
     return wrap

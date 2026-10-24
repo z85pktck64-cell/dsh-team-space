@@ -230,7 +230,16 @@ async function runCrossEnd(base) {
     /name: \$\{JSON\.stringify\(name\)\}/.test(indexSrc),
     'name 还是裸写，@ 开头的值会让 YAML 解析失败')
 
-  // 16) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
+  // 16) 链接类型（repos.type）三端一致：git 给克隆指令，其余直接打开
+  ok('repos 有 type 枚举校验', /REPO_TYPES = new Set\(\['git', 'doc', 'wiki', 'board', 'other'\]\)/.test(indexSrc))
+  ok('DSH 客户端按 type 分流', /LINK_TYPES\[repoType\]/.test(clientSrc) && /isGit\s*\n?\s*\?\s*h\('button'/.test(clientSrc))
+  ok('门户页按 type 分流', /var linkType = row\.type \|\| 'git'/.test(portalSrc))
+  ok('MCP share_repo 接受 type', /One of git \| doc \| wiki \| board \| other/.test(indexSrc))
+  // 三端都要有「链接」这个入口，不能有一端还叫「仓库」
+  ok('门户页 tab 已改名「链接」', /label: '链接'/.test(portalSrc))
+  ok('DSH 客户端 tab 已改名「链接」', /label: '链接'/.test(clientSrc))
+
+  // 17) README 必须保留「三个消费方」章节，否则以后改功能会漏掉 Codex / 门户页
   let readme = ''
   try { readme = readFileSync(root + 'README.md', 'utf8') } catch { /* 没有就报红 */ }
   ok('README 保留三端同步约定', readme.includes('三个消费方'))

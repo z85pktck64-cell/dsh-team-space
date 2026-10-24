@@ -68,7 +68,7 @@ AI 会话锁在单机本地磁盘上，换台机器或换个人就接不上。�
 | 源会话就在本机时认领 | ✅ 一步 | `POST /claim` 直接返回 `mode:'local'` 的 sessionId，复制完整事件日志 |
 | 把做完的结果交回发起人 | ✅ 两段式 | `GET /local-session?since=` 算增量 → `POST /receipt/submit` |
 | 给 AI agent 派活并回收结果 | ✅ F-Assign | `handoffs` 状态机 `open → doing → done`（`open` 不能直跳 `done`） |
-| 分享 SKILL / 登记插件 / 登记 Git 仓库索引 | ✅ | `team_space_share_skill` / `share_plugin` / `share_repo` |
+| 分享 SKILL / 登记插件 / 登记**任意链接** | ✅ | `team_space_share_skill` / `share_plugin` / `share_repo`（`type`：git / doc / wiki / board / other） |
 | 安装别人登记的插件 | ✅ 两段确认 | `/install-plugin` 只落盘 → 用户核对 SHA256 → `/plugin/enable {name, checksum}` |
 | 防止别人静默覆盖我发布的条目 | ✅ | 换作者需 `baseVersion` + `takeOver=true` |
 | 公网访问 / 多租户 / 账号体系 / 实时协同 | ❌ | 不在范围内 |
