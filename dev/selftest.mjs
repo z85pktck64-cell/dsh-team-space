@@ -704,6 +704,14 @@ async function runChannelIsolation(base) {
     /CHANNEL === 'test'/.test(portalSrc) && /test-banner/.test(portalSrc))
   ok('MCP stdio 支持 TEAM_SPACE_CHANNEL=test',
     /TEAM_SPACE_CHANNEL/.test(stdioSrc) && /channel:/.test(stdioSrc))
+
+  // 建委托有两条路：浏览器走 /handoff/create，agent 工具走 SHARED_TOOLS。
+  // 曾经只有前者发通知，于是「用 agent 派活群里没动静、手动点界面却正常」。
+  const notifyCalls = (indexSrc.match(/notifyHandoff\(record\)/g) ?? []).length
+  ok('两条建委托路径都会发企微通知（agent 工具曾经漏过）',
+    notifyCalls >= 2, `只有 ${notifyCalls} 处调用`)
+  ok('join 记录本机 hostId（发起人不该退成「本机 host-8f1」）',
+    /hostId: hostDeviceId\(\)/.test(indexSrc) && /item\.hostId === self/.test(indexSrc))
 }
 
 async function main() {
