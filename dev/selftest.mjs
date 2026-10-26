@@ -380,7 +380,10 @@ async function run(base) {
   ok('complete 后状态为 done', done.entry?.status === 'done')
   ok('结果已写入', done.entry?.result === 'selftest 完成')
   await call(base, 'handoff/remove', { id: handoff.id })
-  ok('测试委托已清理', true)
+  const afterHandoffRemove = await call(base, 'list')
+  const leftoverHandoffs = (afterHandoffRemove.tables?.handoffs ?? []).filter(item => item.id === handoff.id)
+  ok('测试委托已清理', leftoverHandoffs.length === 0,
+    JSON.stringify(leftoverHandoffs.map(item => item.id)))
 
   console.log('F-Assign 状态机护栏')
   const guard = await call(base, 'handoff/create', {
@@ -534,7 +537,11 @@ async function run(base) {
   ok('空回执被拒', emptyReceipt.code === 'BAD_REQUEST', emptyReceipt.error)
   await call(base, 'remove', { id: receiptRes.receipt.id })
   await call(base, 'remove', { id: shareId })
-  ok('认领/回执测试数据已清理', true)
+  const afterShareCleanup = await call(base, 'list')
+  const leftoverTasks = (afterShareCleanup.tables?.tasks ?? [])
+    .filter(item => item.id === shareId || item.id === receiptRes.receipt.id)
+  ok('认领/回执测试数据已清理', leftoverTasks.length === 0,
+    JSON.stringify(leftoverTasks.map(item => item.id)))
 
   console.log('列表契约')
   const limits = await call(base, 'list')
@@ -762,8 +769,12 @@ async function runChannelIsolation(base) {
   const notifyCalls = (indexSrc.match(/notifyHandoff\(record\)/g) ?? []).length
   ok('两条建委托路径都会发企微通知（agent 工具曾经漏过）',
     notifyCalls >= 2, `只有 ${notifyCalls} 处调用`)
-  ok('join 记录本机 hostId（发起人不该退成「本机 host-8f1」）',
-    /hostId: hostDeviceId\(\)/.test(indexSrc) && /item\.hostId === self/.test(indexSrc))
+  // 断言的是「别用 hostId 猜本机」这个结论，不是某段实现：
+  // joins 里的 hostId 记的是**接收方**，成员心跳打进来全撞同一个值，
+  // 一度让发起人随机变成「Neo」「自检心跳」。改回这种猜法就应该红。
+  ok('发起人取本机配置名，不用 joins 的 hostId 猜',
+    /if \(store\.owner\) return \{ name: store\.owner \}/.test(indexSrc)
+    && !/item\.hostId === self/.test(indexSrc))
 }
 
 async function main() {

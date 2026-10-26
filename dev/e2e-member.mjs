@@ -7,6 +7,9 @@
  *     --local  http://127.0.0.1:<本机端口>/api/team-space \
  *     --name Neo --device <客户端 deviceId>
  *
+ *   node dev/e2e-member.mjs --server=... --stamp=<stamp> --cleanup-only
+ *   node dev/e2e-member.mjs --server=... --stamp=<stamp> --failpoint=before-claim --no-cleanup
+ *
  * 所有写操作走 test 通道，跑完清理；不触发企微通知。
  */
 const args = Object.fromEntries(process.argv.slice(2).map(item => {
@@ -18,6 +21,9 @@ const LOCAL = String(args.local ?? '').replace(/\/$/, '')
 const NAME = String(args.name ?? 'member')
 const DEVICE = String(args.device ?? '')
 const TEST = { 'x-team-space-channel': 'test' }
+const CLEANUP_ONLY = Object.prototype.hasOwnProperty.call(args, 'cleanup-only') || Object.prototype.hasOwnProperty.call(args, 'cleanup')
+const FAILPOINT = String(args.failpoint ?? '')
+const NO_CLEANUP = Object.prototype.hasOwnProperty.call(args, 'no-cleanup')
 
 if (!SERVER) {
   console.error('缺少 --server')
@@ -69,8 +75,82 @@ function versionGt(a, b) {
   return false
 }
 
-async function main() {
-  const stamp = `mem-${Date.now().toString(36)}`
+function hitFailpoint(name) {
+  if (FAILPOINT === name) throw new Error(`注入故障：${name}`)
+}
+
+async function hostDeviceId() {
+  const gateway = await call(SERVER, 'gateway-status')
+  const id = String(gateway.deviceId ?? '')
+  if (!id) throw new Error('gateway-status 没有返回 deviceId')
+  return id
+}
+
+function rowsForStamp(data, stamp) {
+  return {
+    todos: (data.tables?.todos ?? []).filter(item =>
+      [item.title, item.name].some(value => String(value ?? '').startsWith(stamp))),
+    handoffs: (data.tables?.handoffs ?? []).filter(item => String(item.title ?? '').startsWith(stamp)),
+  }
+}
+
+async function cleanupByStamp(stamp) {
+  const errors = []
+  const removed = { todos: 0, handoffs: 0 }
+  let data
+  try {
+    data = await call(SERVER, 'list', undefined, TEST)
+  } catch (error) {
+    return { errors: [`读取 test 通道失败：${error.message}`], removed }
+  }
+
+  const { todos, handoffs } = rowsForStamp(data, stamp)
+  for (const item of todos) {
+    try {
+      await call(SERVER, 'entry/remove', { table: 'todos', id: item.id }, TEST)
+      removed.todos += 1
+    } catch (error) {
+      errors.push(`删除 todo ${item.id} 失败：${error.message}`)
+    }
+  }
+
+  if (handoffs.length) {
+    let deviceId = ''
+    try {
+      deviceId = await hostDeviceId()
+    } catch (error) {
+      errors.push(`读取主服务器 deviceId 失败：${error.message}`)
+    }
+    if (deviceId) {
+      for (const item of handoffs) {
+        try {
+          await call(SERVER, 'handoff/remove', { id: item.id, deviceId }, TEST)
+          removed.handoffs += 1
+        } catch (error) {
+          errors.push(`删除委托 ${item.id} 失败：${error.message}`)
+        }
+      }
+    }
+  }
+
+  return { errors, removed }
+}
+
+async function residualByStamp(stamp) {
+  return rowsForStamp(await call(SERVER, 'list', undefined, TEST), stamp)
+}
+
+async function cleanupOnly(stamp) {
+  const result = await cleanupByStamp(stamp)
+  for (const error of result.errors) console.error(`  ✗ ${error}`)
+  const residual = await residualByStamp(stamp)
+  const remaining = residual.todos.length + residual.handoffs.length
+  console.log(`\n清理：removed todos=${result.removed.todos} handoffs=${result.removed.handoffs}；` +
+    `残留 todos=${residual.todos.length} handoffs=${residual.handoffs.length}\n`)
+  process.exit(result.errors.length || remaining ? 1 : 0)
+}
+
+async function runChecks(stamp) {
   console.log(`\n成员端冒烟 · ${NAME} → ${SERVER}\n`)
 
   // 1. 网络与主服务器
@@ -92,13 +172,9 @@ async function main() {
     if (manifest?.version) {
       const installed = String(info.installedVersion ?? '')
       const latest = String(manifest.version)
-      if (versionGt(latest, installed)) {
-        ok('I03 成员端版本低于清单 → 应提示「更新」', true, `本机 ${installed} / 清单 ${latest}`)
-      } else if (installed === latest) {
-        ok('I03 升级后版本与清单一致 → 应显示「当前插件」', true, `${installed} = ${latest}`)
-      } else {
-        ok('I03 本机版本不应高于清单（版本号可能写错）', false, `本机 ${installed} / 清单 ${latest}`)
-      }
+      ok('I03 版本元数据自洽（UI 更新按钮由 M03 人工验收）',
+        Boolean(installed) && !versionGt(installed, latest),
+        `本机 ${installed || '未知'} / 清单 ${latest}`)
     } else {
       console.log('  - 清单里没有 dsh-team-space 条目，跳过版本比较')
     }
@@ -112,6 +188,7 @@ async function main() {
     owner: '主服务器',
   }, TEST)
   const handoffId = created.item?.id ?? created.id
+  hitFailpoint('after-create')
 
   const memberView = await call(SERVER, `list?deviceId=${encodeURIComponent(DEVICE)}&name=${encodeURIComponent(NAME)}`, undefined, TEST)
   const strangerView = await call(SERVER, `list?deviceId=${encodeURIComponent(`${stamp}-stranger`)}&name=路人`, undefined, TEST)
@@ -121,9 +198,11 @@ async function main() {
     !(strangerView.tables?.handoffs ?? []).some(item => item.id === handoffId))
 
   // 5. 成员认领 + 交回（真实门店端工作流）
+  hitFailpoint('before-claim')
   await call(SERVER, 'handoff/claim', { id: handoffId, by: NAME, deviceId: DEVICE }, TEST)
   const claimed = await call(SERVER, `detail?table=handoffs&id=${encodeURIComponent(handoffId)}`, undefined, TEST)
   ok('B06 成员认领后状态 doing', claimed.entry?.status === 'doing', claimed.entry?.status)
+  hitFailpoint('after-claim')
   await call(SERVER, 'handoff/complete', { id: handoffId, result: '门店端跑完', by: NAME, deviceId: DEVICE }, TEST)
   const done = await call(SERVER, `detail?table=handoffs&id=${encodeURIComponent(handoffId)}`, undefined, TEST)
   ok('B07 成员交回后状态 done 且 result 落库',
@@ -133,11 +212,12 @@ async function main() {
   // 6. 成员写入 + 通道隔离
   const todo = await call(SERVER, 'entry/upsert', {
     table: 'todos',
-    entry: { name: `${stamp}-todo`, description: '门店端写入' },
+    entry: { title: `${stamp}-todo`, note: '门店端写入', status: 'open' },
   }, TEST)
   const testList = await call(SERVER, 'list', undefined, TEST)
-  ok('成员能写入共享数据（test 通道）',
-    (testList.tables?.todos ?? []).some(item => item.id === todo.entry.id))
+  ok('成员能写入共享数据且标题可定位（test 通道）',
+    todo.entry?.title === `${stamp}-todo`
+      && (testList.tables?.todos ?? []).some(item => item.id === todo.entry.id))
   const prodList = await call(SERVER, 'list')
   ok('F02 成员写的测试数据不污染真实列表',
     !(prodList.tables?.todos ?? []).some(item => item.id === todo.entry.id))
@@ -168,18 +248,77 @@ async function main() {
     ok('I02 成员能下载清单里的安装包', download.status === 200, `HTTP ${download.status}`)
   }
 
-  // 9. 清理
-  await call(SERVER, 'entry/remove', { table: 'todos', id: todo.entry.id }, TEST)
-  const gw = await call(SERVER, 'gateway-status')
-  await call(SERVER, 'handoff/remove', { id: handoffId, deviceId: gw.deviceId }, TEST)
-  const residual = await call(SERVER, 'list', undefined, TEST)
-  const leftoverTodos = (residual.tables?.todos ?? []).filter(item => String(item.name ?? '').startsWith(stamp))
-  const leftoverHandoffs = (residual.tables?.handoffs ?? []).filter(item => String(item.title ?? '').startsWith(stamp))
-  ok('成员端测试无残留', leftoverTodos.length === 0 && leftoverHandoffs.length === 0,
-    `todos=${leftoverTodos.length} handoffs=${leftoverHandoffs.length}`)
+}
 
-  console.log(`\n结果：${checks - failures}/${checks} 通过${failures ? `，${failures} 条失败` : '，全部通过'}\n`)
-  process.exit(failures ? 1 : 0)
+async function main() {
+  const suppliedStamp = String(args.stamp ?? '').trim()
+  const stamp = suppliedStamp || `mem-${Date.now().toString(36)}`
+  console.log(`stamp=${stamp}`)
+  if (FAILPOINT) console.log(`failpoint=${FAILPOINT}`)
+
+  if (CLEANUP_ONLY) {
+    if (!suppliedStamp) {
+      console.error('--cleanup-only 需要同时传 --stamp=...')
+      process.exit(2)
+    }
+    try {
+      await cleanupOnly(stamp)
+    } catch (error) {
+      console.error('清理失败：', error.message)
+      process.exit(1)
+    }
+    return
+  }
+
+  let runError = null
+  let cleanupError = null
+  try {
+    await runChecks(stamp)
+  } catch (error) {
+    runError = error
+    console.error('\n成员端冒烟中断：', error.message, '\n')
+  } finally {
+    if (NO_CLEANUP) {
+      console.log('  · 跳过 finally 清理（--no-cleanup，故障注入）')
+    } else {
+      try {
+        const result = await cleanupByStamp(stamp)
+        if (result.errors.length) {
+          cleanupError = new Error(result.errors.join('；'))
+          console.error(`  ✗ 清理测试数据失败：${cleanupError.message}`)
+        } else {
+          console.log(`  · 清理测试数据：todos=${result.removed.todos} handoffs=${result.removed.handoffs}`)
+        }
+      } catch (error) {
+        cleanupError = error
+        console.error('  ✗ 清理测试数据异常：', error.message)
+      }
+    }
+  }
+
+  let residual = null
+  try {
+    residual = await residualByStamp(stamp)
+  } catch (error) {
+    console.error('  ✗ 读取残留失败：', error.message)
+  }
+  ok('成员端测试无残留',
+    Boolean(residual) && residual.todos.length === 0 && residual.handoffs.length === 0,
+    residual ? `todos=${residual.todos.length} handoffs=${residual.handoffs.length}` : '无法读取残留')
+
+  const expected = LOCAL ? 17 : 14
+  if (checks < expected) console.error(`  ✗ 用例数不足：${checks} < ${expected}（有前置或分支被跳过）`)
+  const outcome = failures
+    ? `${failures} 条失败`
+    : runError
+      ? '运行中断'
+      : cleanupError
+        ? '清理失败'
+        : '全部通过'
+  console.log(`\n结果：${checks - failures}/${checks} 通过，${outcome}\n`)
+  if (failures || runError || cleanupError) process.exit(1)
+  if (checks < expected) process.exit(2)
+  process.exit(0)
 }
 
 main().catch(error => {
