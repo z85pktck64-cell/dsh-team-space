@@ -775,6 +775,10 @@ async function runChannelIsolation(base) {
   // 客户端拿到 packageUrl 才能自己下载解压。
   ok('MCP get_skill 返回完整包地址与指纹',
     /packageUrl: hit\.packageUrl/.test(mcpSrc) && /packageSha256: hit\.packageSha256/.test(mcpSrc))
+  ok('MCP get_skill 给出可直接执行的安装命令（下载+sha校验+解压+先删旧目录）',
+    /installCommand/.test(mcpSrc) && /shasum -a 256 -c -/.test(mcpSrc)
+    && /rm -rf ~\/\.dsh\/skills/.test(mcpSrc))
+
   ok('MCP list_skills 标出每条技能有没有包',
     /hasPackage: Boolean\(item\.packageUrl\)/.test(mcpSrc) && /fileCount: item\.fileCount/.test(mcpSrc))
 
