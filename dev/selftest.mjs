@@ -769,6 +769,15 @@ async function runChannelIsolation(base) {
   const notifyCalls = (indexSrc.match(/notifyHandoff\(record\)/g) ?? []).length
   ok('两条建委托路径都会发企微通知（agent 工具曾经漏过）',
     notifyCalls >= 2, `只有 ${notifyCalls} 处调用`)
+
+  // 版本闸门是「强制升级」不是「操作失败」：错误要打 silent 标，
+  // 界面只弹升级窗，不许再糊一条「上传失败」误导用户。
+  ok('版本闸门错误被标记 silent（只弹窗不报错）',
+    /if \(error\.code === 'UPGRADE_REQUIRED'\) error\.silent = true/.test(clientSrc)
+    && /function surfaceError/.test(clientSrc))
+  ok('分享对话框遇到版本闸门不再显示失败',
+    /if \(error\?\.silent\) \{ setState\('idle'\); return \}/.test(clientSrc))
+
   // 多文件技能：只写 SKILL.md 会把 references/scripts 全丢掉（真实技能最多 65 个文件）
   ok('skills 表带包字段（packageUrl / packageSha256 / fileCount）',
     /packageUrl: 500/.test(indexSrc) && /packageSha256: 64/.test(indexSrc) && /fileCount: 16/.test(indexSrc))
