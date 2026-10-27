@@ -769,6 +769,14 @@ async function runChannelIsolation(base) {
   const notifyCalls = (indexSrc.match(/notifyHandoff\(record\)/g) ?? []).length
   ok('两条建委托路径都会发企微通知（agent 工具曾经漏过）',
     notifyCalls >= 2, `只有 ${notifyCalls} 处调用`)
+  // 多文件技能：只写 SKILL.md 会把 references/scripts 全丢掉（真实技能最多 65 个文件）
+  ok('skills 表带包字段（packageUrl / packageSha256 / fileCount）',
+    /packageUrl: 500/.test(indexSrc) && /packageSha256: 64/.test(indexSrc) && /fileCount: 16/.test(indexSrc))
+  ok('install-skill 支持包安装并校验 sha256',
+    /via: 'package'/.test(indexSrc) && /技能包校验失败/.test(indexSrc) && /safeExtractTgz/.test(indexSrc))
+  ok('客户端安装技能时把包信息传下去',
+    /packageUrl: item\.packageUrl/.test(clientSrc) && /packageSha256: item\.packageSha256/.test(clientSrc))
+
   // 断言的是「别用 hostId 猜本机」这个结论，不是某段实现：
   // joins 里的 hostId 记的是**接收方**，成员心跳打进来全撞同一个值，
   // 一度让发起人随机变成「Neo」「自检心跳」。改回这种猜法就应该红。

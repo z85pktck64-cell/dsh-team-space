@@ -723,6 +723,38 @@ for (const name of ['mock-stale-write', 'mock-fresh-write', 'mock-legacy-write']
   if (hit) await call('entry/remove', { table: 'repos', id: hit.id }, TEST)
 }
 
+// ---------- 场景 12：多文件技能走包安装 ----------
+// 只写 SKILL.md 会把 references/scripts 丢掉（真实技能最多 65 个文件），
+// 所以带 packageUrl 时必须整包解压到 ~/.dsh/skills/<name>/。
+console.log('多文件技能包')
+const skillRoot = join(home, 'skill-fixture')
+mkdirSync(join(skillRoot, 'mock-skill-pack', 'references'), { recursive: true })
+mkdirSync(join(skillRoot, 'mock-skill-pack', 'scripts'), { recursive: true })
+writeFileSync(join(skillRoot, 'mock-skill-pack', 'SKILL.md'), '# mock skill pack\n')
+writeFileSync(join(skillRoot, 'mock-skill-pack', 'references', 'a.md'), 'ref a\n')
+writeFileSync(join(skillRoot, 'mock-skill-pack', 'scripts', 'run.sh'), '#!/bin/sh\n')
+const skillTgz = join(home, 'mock-skill-pack.tgz')
+execSync(`tar -czf "${skillTgz}" -C "${skillRoot}" mock-skill-pack`)
+const skillServer = createServer((req, res) => { res.end(readFileSync(skillTgz)) })
+await new Promise(resolve => skillServer.listen(0, '127.0.0.1', resolve))
+const skillUrl = `http://127.0.0.1:${skillServer.address().port}/mock-skill-pack.tgz`
+const skillSha = createHash('sha256').update(readFileSync(skillTgz)).digest('hex')
+
+const packed = await call('install-skill', {
+  name: 'mock-skill-pack', content: '# mock skill pack\n', packageUrl: skillUrl, packageSha256: skillSha,
+})
+ok('技能包安装成功并报告文件数', packed.data.via === 'package' && packed.data.files === 3, JSON.stringify(packed.data))
+ok('技能包的 references 真的落盘', existsSync(join(home, 'skills', 'mock-skill-pack', 'references', 'a.md')))
+ok('技能包的 scripts 真的落盘', existsSync(join(home, 'skills', 'mock-skill-pack', 'scripts', 'run.sh')))
+ok('技能包 SKILL.md 在根目录（没有被多套一层）', existsSync(join(home, 'skills', 'mock-skill-pack', 'SKILL.md')))
+
+const badSha = await callFail('install-skill', { name: 'mock-skill-pack', content: 'x', packageUrl: skillUrl, packageSha256: 'deadbeef' })
+ok('技能包 sha 不匹配被拒', badSha.status === 400, JSON.stringify(badSha))
+
+const textOnly = await call('install-skill', { name: 'mock-text-skill', content: '# text only\n' })
+ok('没有包的技能仍走正文路径', textOnly.data.via === 'text' && existsSync(join(home, 'skills', 'mock-text-skill', 'SKILL.md')))
+skillServer.close()
+
 server.close()
 console.log(`\n结果：${checks - failed}/${checks} 通过${failed ? `，${failed} 条失败` : '，全部通过'}\n`)
 process.exit(failed ? 1 : 0)
