@@ -770,6 +770,14 @@ async function runChannelIsolation(base) {
   ok('两条建委托路径都会发企微通知（agent 工具曾经漏过）',
     notifyCalls >= 2, `只有 ${notifyCalls} 处调用`)
 
+  const mcpSrc = readFileSync(root + 'lib/mcp-tools.js', 'utf8')
+  // MCP 侧和 install-skill 同源问题：只回正文，多文件技能就只剩 SKILL.md。
+  // 客户端拿到 packageUrl 才能自己下载解压。
+  ok('MCP get_skill 返回完整包地址与指纹',
+    /packageUrl: hit\.packageUrl/.test(mcpSrc) && /packageSha256: hit\.packageSha256/.test(mcpSrc))
+  ok('MCP list_skills 标出每条技能有没有包',
+    /hasPackage: Boolean\(item\.packageUrl\)/.test(mcpSrc) && /fileCount: item\.fileCount/.test(mcpSrc))
+
   // 版本闸门是「强制升级」不是「操作失败」：错误要打 silent 标，
   // 界面只弹升级窗，不许再糊一条「上传失败」误导用户。
   ok('版本闸门错误被标记 silent（只弹窗不报错）',
