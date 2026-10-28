@@ -99,6 +99,11 @@ async function runCrossEnd(base) {
   const clientSrc = readFileSync(root + 'lib/client.js', 'utf8')
   const indexSrc = readFileSync(root + 'lib/index.js', 'utf8')
   const portalSrc = readFileSync(root + 'lib/portal.html', 'utf8')
+  // 安装器套件不会在 node_modules 留同名目录：靠 install.sh 写的标记 + provides 校验
+  ok('已安装判定认安装器套件的标记（否则永远显示「安装」）',
+    /installed-packs/.test(indexSrc) && /provides\.every\(present\)/.test(indexSrc))
+  ok('套件声明了 provides 清单（用于校验子包是否都在）',
+    /dsh\.installer/.test(indexSrc) && /nodeModulesBases/.test(indexSrc))
   const mcpSrc = readFileSync(root + 'lib/mcp-tools.js', 'utf8')
 
   // 1) isSelf 不能再按插件名判断：那对所有成员都成立，等于成员永远不能更新
