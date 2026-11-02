@@ -755,6 +755,36 @@ const textOnly = await call('install-skill', { name: 'mock-text-skill', content:
 ok('没有包的技能仍走正文路径', textOnly.data.via === 'text' && existsSync(join(home, 'skills', 'mock-text-skill', 'SKILL.md')))
 skillServer.close()
 
+// ---------- 场景 13：artifact 薄实体 ----------
+// PRD F011 / BR-F011-01：team-space 只存引用与元数据，绝不存 docx 字节。
+console.log('artifact 薄实体')
+const ART_SHA = 'a'.repeat(64)
+const artBase = {
+  docId: 'doc-mock-1', workspaceId: 'ws', kind: 'docx', title: '夹具', contentHash: ART_SHA,
+  version: 1, storageType: 'path', storageRef: '/tmp/x.docx', producedKind: 'agent',
+  status: 'in_review', role: 'deliverable', sessionIds: ['s1'], handoffIds: ['h1'],
+}
+const reg = await call('artifact/register', { artifact: artBase })
+ok('artifact 能登记', reg.data.ok && reg.data.artifact.docId === 'doc-mock-1', JSON.stringify(reg.data).slice(0, 160))
+const bySession = await call('artifact/list?sessionId=s1')
+ok('artifact 能按 sessionId 关联查', bySession.data.total === 1)
+const byHandoff = await call('artifact/list?handoffId=h1')
+ok('artifact 能按 handoffId 关联查', byHandoff.data.total === 1)
+const byBytes = await callFail('artifact/register', { artifact: { ...artBase, content: 'PK-docx-bytes' } })
+ok('artifact 拒绝内容字段（BR-F011-01）', byBytes.status === 400, JSON.stringify(byBytes).slice(0, 120))
+const badKind = await callFail('artifact/register', { artifact: { ...artBase, kind: 'exe' } })
+ok('artifact 拒绝非法 kind', badKind.status === 400)
+const badHash = await callFail('artifact/register', { artifact: { ...artBase, contentHash: 'xyz' } })
+ok('artifact 拒绝非法 contentHash', badHash.status === 400)
+const v2 = await call('artifact/register', { artifact: { ...artBase, version: 2, status: 'approved' } })
+ok('artifact 同 docId 视为同一产物（版本更新）',
+  v2.data.artifact?.version === '2' && v2.data.artifact?.status === 'approved',
+  JSON.stringify(v2.data).slice(0, 120))
+const stored = JSON.parse(readFileSync(join(home, 'storages', 'team-space.json'), 'utf8'))
+ok('落盘里没有任何字节内容', !JSON.stringify(stored.artifacts ?? []).includes('PK-docx-bytes'))
+const delArt = await call('artifact/remove', { docId: 'doc-mock-1' })
+ok('artifact 能删除', delArt.data.ok === true)
+
 server.close()
 console.log(`\n结果：${checks - failed}/${checks} 通过${failed ? `，${failed} 条失败` : '，全部通过'}\n`)
 process.exit(failed ? 1 : 0)

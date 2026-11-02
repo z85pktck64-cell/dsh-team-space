@@ -99,6 +99,15 @@ async function runCrossEnd(base) {
   const clientSrc = readFileSync(root + 'lib/client.js', 'utf8')
   const indexSrc = readFileSync(root + 'lib/index.js', 'utf8')
   const portalSrc = readFileSync(root + 'lib/portal.html', 'utf8')
+  // artifact 是团队空间里唯一「代表外部文档」的实体（PRD F011）。
+  // 它必须是薄实体：只存引用，任何字节内容都要在入口被拒。
+  ok('artifact 有四条路由（register/list/get/remove）',
+    ['register', 'list', 'get', 'remove'].every(op => indexSrc.includes(`artifact/${op}`)))
+  ok('artifact 是薄实体：拒绝内容字段',
+    /assertThinArtifact/.test(indexSrc) && /artifact 只存引用/.test(indexSrc))
+  ok('artifact 必填 contentHash 且校验 sha256 形状',
+    /contentHash 必须是 64 位 sha256/.test(indexSrc))
+
   // 安装器套件不会在 node_modules 留同名目录：靠 install.sh 写的标记 + provides 校验
   ok('已安装判定认安装器套件的标记（否则永远显示「安装」）',
     /installed-packs/.test(indexSrc) && /provides\.every\(present\)/.test(indexSrc))
