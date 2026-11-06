@@ -99,6 +99,12 @@ async function runCrossEnd(base) {
   const clientSrc = readFileSync(root + 'lib/client.js', 'utf8')
   const indexSrc = readFileSync(root + 'lib/index.js', 'utf8')
   const portalSrc = readFileSync(root + 'lib/portal.html', 'utf8')
+  // 后台轮询必须「看得见才跑」：无条件 5 秒拉 1MB 会持续吃 CPU（实测渲染进程 ~39%）
+  ok('后台轮询可见才跑，且间隔不再是 5 秒',
+    /visibilitychange/.test(clientSrc)
+    && /setInterval\(load, POLL_MS\)/.test(clientSrc)
+    && /POLL_MS = 15_000/.test(clientSrc))
+
   // artifact 是团队空间里唯一「代表外部文档」的实体（PRD F011）。
   // 它必须是薄实体：只存引用，任何字节内容都要在入口被拒。
   ok('artifact 有四条路由（register/list/get/remove）',
