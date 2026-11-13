@@ -801,15 +801,17 @@ async function runChannelIsolation(base) {
     /installerDeclared/.test(clientSrc) && /runInstaller: Boolean\(done\.installerDeclared\)/.test(clientSrc))
   const mcpSrc = readFileSync(root + 'lib/mcp-tools.js', 'utf8')
   // MCP 侧和 install-skill 同源问题：只回正文，多文件技能就只剩 SKILL.md。
-  // 客户端拿到 packageUrl 才能自己下载解压。
+  // 包地址按当前 apiBase 拼（store 里只存文件名），换主服务器 IP 不会变成死链。
   ok('MCP get_skill 返回完整包地址与指纹',
-    /packageUrl: hit\.packageUrl/.test(mcpSrc) && /packageSha256: hit\.packageSha256/.test(mcpSrc))
+    /const packageFile = packageFileOf\(hit\)/.test(mcpSrc)
+    && /\/download\?file=\$\{encodeURIComponent\(packageFile\)\}/.test(mcpSrc)
+    && /packageSha256: hit\.packageSha256/.test(mcpSrc))
   ok('MCP get_skill 给出可直接执行的安装命令（下载+sha校验+解压+先删旧目录）',
     /installCommand/.test(mcpSrc) && /shasum -a 256 -c -/.test(mcpSrc)
     && /rm -rf ~\/\.dsh\/skills/.test(mcpSrc))
 
   ok('MCP list_skills 标出每条技能有没有包',
-    /hasPackage: Boolean\(item\.packageUrl\)/.test(mcpSrc) && /fileCount: item\.fileCount/.test(mcpSrc))
+    /hasPackage: Boolean\(packageFileOf\(item\)\)/.test(mcpSrc) && /fileCount: item\.fileCount/.test(mcpSrc))
 
   // 版本闸门是「强制升级」不是「操作失败」：错误要打 silent 标，
   // 界面只弹升级窗，不许再糊一条「上传失败」误导用户。
@@ -820,12 +822,21 @@ async function runChannelIsolation(base) {
     /if \(error\?\.silent\) \{ setState\('idle'\); return \}/.test(clientSrc))
 
   // 多文件技能：只写 SKILL.md 会把 references/scripts 全丢掉（真实技能最多 65 个文件）
-  ok('skills 表带包字段（packageUrl / packageSha256 / fileCount）',
-    /packageUrl: 500/.test(indexSrc) && /packageSha256: 64/.test(indexSrc) && /fileCount: 16/.test(indexSrc))
+  ok('skills 表带包字段（packageFile / packageSha256 / fileCount）',
+    /packageFile: 200/.test(indexSrc) && /packageSha256: 64/.test(indexSrc) && /fileCount: 16/.test(indexSrc))
   ok('install-skill 支持包安装并校验 sha256',
     /via: 'package'/.test(indexSrc) && /技能包校验失败/.test(indexSrc) && /safeExtractTgz/.test(indexSrc))
   ok('客户端安装技能时把包信息传下去',
-    /packageUrl: item\.packageUrl/.test(clientSrc) && /packageSha256: item\.packageSha256/.test(clientSrc))
+    /item\.packageFile/.test(clientSrc)
+    && /\/download\?file=\$\{encodeURIComponent\(item\.packageFile\)\}/.test(clientSrc)
+    && /packageSha256: item\.packageSha256/.test(clientSrc))
+  // 上传入口不打包 = 新分享的技能天然残缺（references/scripts 全丢）。
+  // 这是「别人拿卡片复制过去用不了」的根因，必须默认打包。
+  ok('分享技能默认打包整个目录（含 references/scripts）',
+    /args\?\.package !== false/.test(indexSrc) && /packSkillDirectory/.test(indexSrc))
+  // 包地址不能写死主机：主服务器换 IP 后，写死 192.168.42.x 的 42 条会全成死链。
+  ok('技能包地址只存文件名，由消费端拼当前地址',
+    /function packageFileOf/.test(indexSrc) && /packageFile, hasPackage: Boolean\(packageFile\)/.test(indexSrc))
 
   // 断言的是「别用 hostId 猜本机」这个结论，不是某段实现：
   // joins 里的 hostId 记的是**接收方**，成员心跳打进来全撞同一个值，
