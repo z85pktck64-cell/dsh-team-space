@@ -528,15 +528,17 @@
     }
 
     var actions = el('div', { class: 'detail-actions' })
-    if (text) actions.appendChild(buttonEl('复制正文', function () { copy(text) }))
+    if (text) actions.appendChild(buttonEl(tab.id === 'skills' ? '复制正文（仅 SKILL.md）' : '复制正文', function () { copy(text) }))
     if (tab.id === 'skills') {
       actions.appendChild(buttonEl('复制 MCP 指令', function () {
-        copy('请用 team-space MCP 的 team_space_get_skill 工具读取技能「' + name + '」的正文。')
+        copy('请用 team-space MCP 的 team_space_get_skill 工具取技能「' + name + '」，'
+          + '并执行它返回的 installCommand 装完整包（多文件技能只拿正文会缺 references/scripts）。')
       }))
       actions.appendChild(buttonEl('复制安装指令', function () {
-        copy('请把团队空间的技能「' + name + '」安装到你的 Codex：\n'
-          + '1) 调用 team-space MCP 的 team_space_get_skill 取回正文；\n'
-          + '2) 写入 ~/.codex/skills/' + name + '/SKILL.md。')
+        copy('请把团队空间的技能「' + name + '」装到本机：\n'
+          + '1) 调用 team-space MCP 的 team_space_get_skill 取回内容；\n'
+          + '2) 直接执行它返回的 installCommand（下载 + sha 校验 + 解压到 ~/.dsh/skills/' + name + '/）；\n'
+          + '3) 不要只复制 SKILL.md —— references/scripts 会一起丢掉。')
       }))
     }
     if (tab.id === 'tasks') {

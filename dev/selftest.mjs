@@ -842,6 +842,20 @@ async function runChannelIsolation(base) {
   ok('技能包地址只存文件名，由消费端拼当前地址',
     /function packageFileOf/.test(indexSrc) && /packageFile, hasPackage: Boolean\(packageFile\)/.test(indexSrc))
 
+  // 「复制全文」只给 SKILL.md：有包时必须换成能装全的命令，否则复制出去还是残缺技能。
+  ok('技能卡片有包时给「复制安装命令」而不是「复制全文」',
+    /copySkillInstallCommand/.test(clientSrc)
+    && /label: '复制安装命令'/.test(clientSrc)
+    && /复制全文（仅正文）/.test(clientSrc))
+  // 安装到 Codex 同样不能只写 SKILL.md：多文件技能在 Codex 里会变成空壳
+  const codexRoute = indexSrc.slice(indexSrc.indexOf('export-codex-skill'))
+  ok('安装到 Codex 走整包（不再只写 SKILL.md）',
+    /safeExtractTgz/.test(codexRoute.slice(0, 4000)) && /via: 'package'/.test(codexRoute.slice(0, 4000)))
+  // 门户页给别人看的指令必须指向 installCommand，不能教人只复制正文
+  const portalHtmlSrc = readFileSync(root + 'lib/portal.html', 'utf8')
+  ok('门户页安装指令要求执行 installCommand',
+    /installCommand/.test(portalHtmlSrc) && /不要只复制 SKILL\.md/.test(portalHtmlSrc))
+
   // 断言的是「别用 hostId 猜本机」这个结论，不是某段实现：
   // joins 里的 hostId 记的是**接收方**，成员心跳打进来全撞同一个值，
   // 一度让发起人随机变成「Neo」「自检心跳」。改回这种猜法就应该红。
