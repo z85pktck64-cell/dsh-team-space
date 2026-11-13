@@ -834,6 +834,10 @@ async function runChannelIsolation(base) {
   // 这是「别人拿卡片复制过去用不了」的根因，必须默认打包。
   ok('分享技能默认打包整个目录（含 references/scripts）',
     /args\?\.package !== false/.test(indexSrc) && /packSkillDirectory/.test(indexSrc))
+  // 打包结果必须用 packageFile 作键：upsertEntry 按 FIELDS 裁剪，写成 file 会被静默丢掉，
+  // 表现是「打了包但记录里没有包」，最难查的一类。
+  ok('打包结果的字段名是 packageFile',
+    /packageFile: file,/.test(indexSrc))
   // 包地址不能写死主机：主服务器换 IP 后，写死 192.168.42.x 的 42 条会全成死链。
   ok('技能包地址只存文件名，由消费端拼当前地址',
     /function packageFileOf/.test(indexSrc) && /packageFile, hasPackage: Boolean\(packageFile\)/.test(indexSrc))
