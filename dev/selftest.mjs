@@ -835,6 +835,11 @@ async function runChannelIsolation(base) {
   ok('加入失败必须报错，不能静默吞掉再保存',
     /joinResponse/.test(clientSrc) && /连不上 \$\{url\}/.test(clientSrc)
     && /setTimeout\(\(\) => controller\.abort\(\), 8000\)/.test(clientSrc))
+  // 没有超时的 fetch 在主服务器不可达时会一直等（不是立刻失败），
+  // 表现就是界面永远转圈。所有请求必须走带 AbortController 的封装。
+  ok('所有请求都有超时（否则不可达会一直 loading）',
+    /timeoutMs = 12000/.test(clientSrc) && /秒无响应/.test(clientSrc)
+    && /AbortController\(\)/.test(clientSrc))
   // 上传入口不打包 = 新分享的技能天然残缺（references/scripts 全丢）。
   // 这是「别人拿卡片复制过去用不了」的根因，必须默认打包。
   ok('分享技能默认打包整个目录（含 references/scripts）',
