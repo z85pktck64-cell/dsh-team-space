@@ -830,6 +830,11 @@ async function runChannelIsolation(base) {
     /item\.packageFile/.test(clientSrc)
     && /\/download\?file=\$\{encodeURIComponent\(item\.packageFile\)\}/.test(clientSrc)
     && /packageSha256: item\.packageSha256/.test(clientSrc))
+  // 「加入团队空间」曾经 .catch(() => null) 吞掉失败：地址写错也照样保存配置并 reload，
+  // 用户只看到「点了没反应」。必须先探测通再保存，失败要有明确错误。
+  ok('加入失败必须报错，不能静默吞掉再保存',
+    /joinResponse/.test(clientSrc) && /连不上 \$\{url\}/.test(clientSrc)
+    && /setTimeout\(\(\) => controller\.abort\(\), 8000\)/.test(clientSrc))
   // 上传入口不打包 = 新分享的技能天然残缺（references/scripts 全丢）。
   // 这是「别人拿卡片复制过去用不了」的根因，必须默认打包。
   ok('分享技能默认打包整个目录（含 references/scripts）',
