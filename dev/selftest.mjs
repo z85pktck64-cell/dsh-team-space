@@ -849,6 +849,11 @@ async function runChannelIsolation(base) {
   ok('服务器地址只显示一个',
     /'服务器地址'/.test(clientSrc) && !/'全部地址'/.test(clientSrc)
     && !/listLanAddresses/.test(indexSrc))
+  // 大会话分享曾因 2MB 请求体限制被 req.destroy，网关只看到 upstream 断开 → 前端 502。
+  ok('会话分享支持大会话（请求体 20MB / 正文 1.5MB 截断）',
+    /MAX_BODY_BYTES = 20 \* 1024 \* 1024/.test(indexSrc)
+    && /MAX_TRANSCRIPT_CHARS = 1_500_000/.test(indexSrc)
+    && /clip\(renderTranscript\(events, title\), MAX_TRANSCRIPT_CHARS\)/.test(indexSrc))
   // 上传入口不打包 = 新分享的技能天然残缺（references/scripts 全丢）。
   // 这是「别人拿卡片复制过去用不了」的根因，必须默认打包。
   ok('分享技能默认打包整个目录（含 references/scripts）',
