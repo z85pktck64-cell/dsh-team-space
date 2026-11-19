@@ -845,6 +845,10 @@ async function runChannelIsolation(base) {
     /function lanAddressFor/.test(indexSrc)
     && /lanAddressFor\(callerIp\)/.test(indexSrc)
     && /peerIp \|\| await lanAddress\(\)/.test(indexSrc))
+  // 这个字段的语义是「主服务器地址」，给同事填的：多网卡时只给默认出口会让人填错。
+  ok('服务器地址列出全部可用地址',
+    /function listLanAddresses/.test(indexSrc) && /hosts: listLanAddresses/.test(indexSrc)
+    && /'服务器地址'/.test(clientSrc) && /'全部地址'/.test(clientSrc))
   // 上传入口不打包 = 新分享的技能天然残缺（references/scripts 全丢）。
   // 这是「别人拿卡片复制过去用不了」的根因，必须默认打包。
   ok('分享技能默认打包整个目录（含 references/scripts）',
