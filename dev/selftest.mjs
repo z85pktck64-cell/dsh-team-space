@@ -840,6 +840,11 @@ async function runChannelIsolation(base) {
   ok('所有请求都有超时（否则不可达会一直 loading）',
     /timeoutMs = 12000/.test(clientSrc) && /秒无响应/.test(clientSrc)
     && /AbortController\(\)/.test(clientSrc))
+  // 多网卡机器上「默认出口」不一定是同事能到的网段：按调用者来源选地址才准。
+  ok('gateway-status 按调用者网段返回地址',
+    /function lanAddressFor/.test(indexSrc)
+    && /lanAddressFor\(callerIp\)/.test(indexSrc)
+    && /peerIp \|\| await lanAddress\(\)/.test(indexSrc))
   // 上传入口不打包 = 新分享的技能天然残缺（references/scripts 全丢）。
   // 这是「别人拿卡片复制过去用不了」的根因，必须默认打包。
   ok('分享技能默认打包整个目录（含 references/scripts）',
