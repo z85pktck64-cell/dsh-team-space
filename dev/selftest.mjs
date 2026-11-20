@@ -844,7 +844,7 @@ async function runChannelIsolation(base) {
   ok('gateway-status 按调用者网段返回地址',
     /function lanAddressFor/.test(indexSrc)
     && /lanAddressFor\(callerIp\)/.test(indexSrc)
-    && /peerIp \|\| await lanAddress\(\)/.test(indexSrc))
+    && /peerIp \|\| await teamFacingAddress\(\)/.test(indexSrc))
   // 这个字段的语义是「主服务器地址」，只显示一个：多地址列表已按用户要求去掉。
   ok('服务器地址只显示一个',
     /'服务器地址'/.test(clientSrc) && !/'全部地址'/.test(clientSrc)
@@ -862,6 +862,11 @@ async function runChannelIsolation(base) {
     /MAX_BODY_BYTES = 20 \* 1024 \* 1024/.test(indexSrc))
   // DSH 0.2.x 的 HTTP 端口要浏览器会话 cookie，8080 网关转发永远 401。
   // 插件自己开一个只挂本插件路由的端口，网关转发到它。
+  // 本机视角不能显示默认出口（USB 网卡 / 备份线路），要显示同事能加入的那条
+  ok('本机视角显示团队可用地址（优先非默认出口、排除 VPN）',
+    /function teamFacingAddress/.test(indexSrc)
+    && /peerIp \|\| await teamFacingAddress\(\)/.test(indexSrc)
+    && /utun\|ppp\|tun\|tap\|ipsec/.test(indexSrc))
   ok('插件自带局域网端口（绕开 DSH 的会话认证）',
     /http\.createServer/.test(indexSrc)
     && /lanServer\.listen\(LAN_PORT/.test(indexSrc)
