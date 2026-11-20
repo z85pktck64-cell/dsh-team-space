@@ -860,6 +860,12 @@ async function runChannelIsolation(base) {
   // 大会话分享曾因 2MB 请求体限制被 req.destroy，网关只看到 upstream 断开 → 前端 502
   ok('分享请求体上限已放宽到 20MB',
     /MAX_BODY_BYTES = 20 \* 1024 \* 1024/.test(indexSrc))
+  // DSH 0.2.x 的 HTTP 端口要浏览器会话 cookie，8080 网关转发永远 401。
+  // 插件自己开一个只挂本插件路由的端口，网关转发到它。
+  ok('插件自带局域网端口（绕开 DSH 的会话认证）',
+    /http\.createServer/.test(indexSrc)
+    && /lanServer\.listen\(LAN_PORT/.test(indexSrc)
+    && /localRoutes\.find/.test(indexSrc))
   // 上传入口不打包 = 新分享的技能天然残缺（references/scripts 全丢）。
   // 这是「别人拿卡片复制过去用不了」的根因，必须默认打包。
   ok('分享技能默认打包整个目录（含 references/scripts）',
