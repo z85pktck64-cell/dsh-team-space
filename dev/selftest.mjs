@@ -867,6 +867,11 @@ async function runChannelIsolation(base) {
     /function teamFacingAddress/.test(indexSrc)
     && /peerIp \|\| await teamFacingAddress\(\)/.test(indexSrc)
     && /utun\|ppp\|tun\|tap\|ipsec/.test(indexSrc))
+  // 每个 Git 链接可以配「产物预览」：测试/开发 与 正式 两套地址，点击交给系统浏览器
+  ok('链接支持产物预览地址（测试/正式两套，只收 http(s)）',
+    /previewDevUrl: 500, previewProdUrl: 500/.test(indexSrc)
+    && /previewDevUrl/.test(clientSrc) && /previewProdUrl/.test(clientSrc)
+    && /https\?:\\\/\\\//.test(indexSrc))
   ok('插件自带局域网端口（绕开 DSH 的会话认证）',
     /http\.createServer/.test(indexSrc)
     && /lanServer\.listen\(LAN_PORT/.test(indexSrc)
